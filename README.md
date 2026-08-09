@@ -1,6 +1,4 @@
-#THIS IS CURRENTLY BROKEN DO NOT USE
-Im trying to fix it
-
+# THIS IS CURRENTLY BROKEN DO NOT USE
 
 
 # image-to-gcode
