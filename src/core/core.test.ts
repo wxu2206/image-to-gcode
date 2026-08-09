@@ -3,7 +3,7 @@ import { contour, orderPaths, raster } from './conversion';
 import { distance, machinePoint, scaleToOutput, simplify } from './geometry';
 import { generate, statistics } from './gcode';
 import { defaults, profiles, validate } from './machine';
-import type { Path, Toolpath } from './types';
+import type { Move, Path, Toolpath } from './types';
 
 const settings = { ...defaults, outputWidth: 100, outputHeight: 50, workWidth: 200, workHeight: 100, lineSpacing: 10, threshold: 128 };
 const image = (width: number, height: number, values: number[]) => ({ width, height, data: new Uint8ClampedArray(values) });
@@ -96,5 +96,23 @@ describe('G-code generation', () => {
     const result = generate(singlePath([{ x: 1, y: 1 }, { x: 10, y: 10 }]), settings, profiles[1]);
     const summary = statistics(result.moves);
     expect(summary.working).toBe(1); expect(summary.travels).toBe(1); expect(summary.total).toBeGreaterThan(summary.work); expect(summary.bounds?.maxX).toBe(100);
+  });
+  it('uses one-pass statistics for very large movement collections', () => {
+    const count = 150_000;
+    const moves: Move[] = [];
+    for (let index = 0; index < count; index += 1) {
+      moves.push({ command: index % 2 ? 'G1' : 'G0', from: { x: index, y: -index, z: index % 3 ? undefined : -1 }, to: { x: index + 1, y: -index - 1, z: index % 3 ? undefined : 0 }, working: Boolean(index % 2), feed: 60 });
+    }
+    const summary = statistics(moves);
+    expect(summary.movementCount).toBe(count);
+    expect(summary.working).toBe(count / 2);
+    expect(summary.travels).toBe(count / 2);
+    expect(summary.bounds).toMatchObject({ minX: 0, maxX: count, minY: -count, maxY: 0, minZ: -1, maxZ: 0 });
+    expect(summary.total).toBeCloseTo(count / 3 * Math.sqrt(3) + count / 3 * 2 * Math.sqrt(2));
+  });
+  it('skips non-finite movement coordinates when calculating bounds', () => {
+    const summary = statistics([{ command: 'G0', from: { x: Number.NaN, y: 0 }, to: { x: Infinity, y: 1 }, working: false, feed: 100 }]);
+    expect(summary.bounds).toBeNull();
+    expect(summary.total).toBe(0);
   });
 });

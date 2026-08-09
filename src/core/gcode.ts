@@ -17,8 +17,8 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
     `; mode: ${toolpath.mode}`,
     settings.units === 'mm' ? 'G21' : 'G20',
     'G90',
-    ...profile.header.trim().split('\n').filter(Boolean),
   ];
+  for (const line of profile.header.trim().split('\n')) if (line) lines.push(line);
   const moves: Move[] = [];
   let current: Point = profile.kind === 'cnc' ? { x: 0, y: 0, z: settings.safeZ } : { x: 0, y: 0 };
   const mapped = (point: Point) => machinePoint(scaleToOutput(point, toolpath.width, toolpath.height, settings), settings);
@@ -52,8 +52,8 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
       const depth = Math.max(settings.maxDepth, settings.workZ - pass * profile.passDepth);
       if (profile.kind === 'cnc') addMove('G1', { ...start, z: depth }, true, settings.feed, path.id);
 
-      for (const sourcePoint of path.points.slice(1)) {
-        const target = mapped(sourcePoint);
+      for (let pointIndex = 1; pointIndex < path.points.length; pointIndex += 1) {
+        const target = mapped(path.points[pointIndex]);
         if (profile.kind === 'cnc') target.z = depth;
         if (target.x < 0 || target.y < 0 || target.x > settings.workWidth || target.y > settings.workHeight) {
           warnings.push(`Path ${path.id} extends outside work area.`);
@@ -65,28 +65,62 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
   }
 
   if (profile.kind === 'cnc') liftToSafeZ();
-  lines.push(...profile.footer.trim().split('\n').filter(Boolean));
+  for (const line of profile.footer.trim().split('\n')) if (line) lines.push(line);
   return { code: `${lines.join('\n')}\n`, moves, warnings: [...new Set(warnings)] };
 }
 
 export function statistics(moves: Move[]) {
   let work = 0;
   let travel = 0;
+  let working = 0;
+  let travels = 0;
+  let time = 0;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  let hasCoordinates = false;
+  let hasZ = false;
+
+  const includePoint = (point: Point) => {
+    if (Number.isFinite(point.x) && Number.isFinite(point.y)) {
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+      hasCoordinates = true;
+    }
+    if (point.z !== undefined && Number.isFinite(point.z)) {
+      minZ = Math.min(minZ, point.z);
+      maxZ = Math.max(maxZ, point.z);
+      hasZ = true;
+    }
+  };
+
   for (const move of moves) {
-    if (move.working) work += distance(move.from, move.to);
-    else travel += distance(move.from, move.to);
+    includePoint(move.from);
+    includePoint(move.to);
+    const moveDistance = distance(move.from, move.to);
+    const validDistance = Number.isFinite(moveDistance) ? moveDistance : 0;
+    if (move.working) {
+      work += validDistance;
+      working += 1;
+    } else {
+      travel += validDistance;
+      travels += 1;
+    }
+    if (Number.isFinite(move.feed) && move.feed !== undefined && move.feed > 0) time += validDistance / move.feed * 60;
   }
-  const points = moves.flatMap((move) => [move.from, move.to]);
   return {
     work,
     travel,
     total: work + travel,
-    working: moves.filter((move) => move.working).length,
-    travels: moves.filter((move) => !move.working).length,
-    time: moves.reduce((total, move) => total + distance(move.from, move.to) / (move.feed || 1) * 60, 0),
-    bounds: points.length ? {
-      minX: Math.min(...points.map((point) => point.x)), maxX: Math.max(...points.map((point) => point.x)),
-      minY: Math.min(...points.map((point) => point.y)), maxY: Math.max(...points.map((point) => point.y)),
-    } : null,
+    movementCount: moves.length,
+    working,
+    travels,
+    time,
+    bounds: hasCoordinates ? { minX: minX === 0 ? 0 : minX, maxX: maxX === 0 ? 0 : maxX, minY: minY === 0 ? 0 : minY, maxY: maxY === 0 ? 0 : maxY, minZ: hasZ ? (minZ === 0 ? 0 : minZ) : null, maxZ: hasZ ? (maxZ === 0 ? 0 : maxZ) : null } : null,
   };
 }

@@ -91,7 +91,8 @@ export function contour(image: GrayImage, settings: Settings): Toolpath {
   const paths: Path[] = [];
   let id = 0;
   while (outgoing.size) {
-    const startKey = [...outgoing.keys()].sort()[0];
+    const startKey = outgoing.keys().next().value;
+    if (startKey === undefined) break;
     const [startX, startY] = startKey.split(',').map(Number);
     const first = takeNext(point(startX, startY));
     if (!first) continue;
