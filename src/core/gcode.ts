@@ -20,7 +20,7 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
     ...profile.header.trim().split('\n').filter(Boolean),
   ];
   const moves: Move[] = [];
-  let current: Point = { x: 0, y: 0, z: profile.kind === 'cnc' ? settings.safeZ : 0 };
+  let current: Point = profile.kind === 'cnc' ? { x: 0, y: 0, z: settings.safeZ } : { x: 0, y: 0 };
   const mapped = (point: Point) => machinePoint(scaleToOutput(point, toolpath.width, toolpath.height, settings), settings);
 
   const addMove = (command: Move['command'], target: Point, working: boolean, feed: number, pathId?: string) => {
