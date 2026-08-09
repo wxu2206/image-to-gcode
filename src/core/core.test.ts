@@ -16,6 +16,10 @@ describe('geometry', () => {
     expect(machinePoint({ x: 10, y: 5 }, { ...settings, origin: 'center' })).toMatchObject({ x: -40, y: -20 });
   });
   it('applies axis inversions and offsets after origin transforms', () => expect(machinePoint({ x: 10, y: 5 }, { ...settings, invertX: true, invertY: true, offsetX: 2, offsetY: 3 })).toMatchObject({ x: 92, y: 48 }));
+  it('keeps physical placement independent from viewport state', () => {
+    const placed = machinePoint({ x: 0, y: 0 }, { ...settings, rotationDeg: 90, offsetX: 5, offsetY: 7 });
+    expect(placed).toMatchObject({ x: 80, y: -18 });
+  });
   it('calculates 3D distances', () => expect(distance({ x: 0, y: 0, z: 0 }, { x: 3, y: 4, z: 12 })).toBe(13));
   it('simplifies collinear points while retaining a corner', () => {
     expect(simplify([{ x: 0, y: 0 }, { x: 1, y: .01 }, { x: 2, y: 0 }], .1)).toHaveLength(2);
@@ -62,6 +66,10 @@ describe('machine validation and profiles', () => {
     const warnings = validate({ ...settings, feed: -1, outputWidth: 300, passes: 1.5, lineSpacing: 0, precision: 9, safeZ: -1, workZ: 3, maxDepth: Number.NaN });
     expect(warnings.length).toBeGreaterThanOrEqual(7);
   });
+  it('validates rotated image bounds rather than unrotated dimensions', () => {
+    const warnings = validate({ ...settings, workWidth: 100, workHeight: 100, outputWidth: 90, outputHeight: 40, rotationDeg: 45 });
+    expect(warnings).toContain('Transformed image exceeds the configured work area.');
+  });
 });
 
 describe('G-code generation', () => {
@@ -82,6 +90,15 @@ describe('G-code generation', () => {
     expect(result.moves.find((move) => !move.working)?.to).toMatchObject({ x: 102, y: 3 });
     expect(result.moves.find((move) => move.working)?.to).toMatchObject({ x: 2, y: 53 });
     expect(result.code).toContain('X102 Y3');
+  });
+  it('applies rotation once to final movement and G-code coordinates deterministically', () => {
+    const placed = { ...settings, outputWidth: 100, outputHeight: 50, rotationDeg: 90, offsetX: 10, offsetY: 20 };
+    const first = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), placed, profiles[1]);
+    const second = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), placed, profiles[1]);
+    expect(first.moves).toEqual(second.moves);
+    expect(first.moves.find((move) => !move.working)?.to).toMatchObject({ x: 85, y: -5 });
+    expect(first.moves.find((move) => move.working)?.to).toMatchObject({ x: 35, y: 95 });
+    expect(first.code).toContain('X85 Y-5');
   });
   it('restarts every CNC pass at the path start and limits depth', () => {
     const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), { ...settings, passes: 3, workZ: -1, maxDepth: -2 }, { ...profiles[0], passDepth: 1 });

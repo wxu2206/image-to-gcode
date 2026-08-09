@@ -17,6 +17,11 @@ describe('physical toolpath detail', () => {
     expect(detailResolution(source, { ...settings, toolpathDetail: .1 })).toMatchObject({ width: 1000, height: 500, physicalWidthMm: 100, physicalHeightMm: 50 });
     expect(detailResolution(source, { ...settings, toolpathDetail: .5 })).toMatchObject({ width: 200, height: 100, physicalWidthMm: 100, physicalHeightMm: 50 });
   });
+  it('keeps detail in physical units when placement is resized', () => {
+    const source = darkImage(1000, 500);
+    const resized = detailResolution(source, { ...settings, outputWidth: 200, outputHeight: 100, toolpathDetail: .5 });
+    expect(resized).toMatchObject({ width: 400, height: 200, physicalWidthMm: 200, physicalHeightMm: 100 });
+  });
 
   it('reduces dense raster geometry as detail becomes physically coarser', () => {
     const source = darkImage(1000, 500);

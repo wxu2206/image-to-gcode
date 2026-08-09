@@ -1,5 +1,5 @@
 import type { GcodeResult, MachineProfile, Move, Point, Settings, Toolpath } from './types';
-import { distance } from './geometry';
+import { distance, machinePoint } from './geometry';
 import { validate } from './machine';
 
 export type ToolpathStats = {
@@ -32,15 +32,7 @@ function buildProgram(toolpath: Toolpath, settings: Settings, profile: MachinePr
   let current: Point = profile.kind === 'cnc' ? { x: 0, y: 0, z: settings.safeZ } : { x: 0, y: 0 };
   const xScale = settings.outputWidth / toolpath.width;
   const yScale = settings.outputHeight / toolpath.height;
-  const mapped = (source: Point): Point => {
-    let x = source.x * xScale;
-    let y = source.y * yScale;
-    if (settings.origin === 'center') { x -= settings.outputWidth / 2; y -= settings.outputHeight / 2; }
-    else if (settings.origin === 'top-left') y = settings.outputHeight - y;
-    if (settings.invertX) x = settings.outputWidth - x;
-    if (settings.invertY) y = settings.outputHeight - y;
-    return { x: x + settings.offsetX, y: y + settings.offsetY, z: source.z };
-  };
+  const mapped = (source: Point): Point => machinePoint({ x: source.x * xScale, y: source.y * yScale, z: source.z }, settings);
   let pointTotal = 0;
   for (const path of toolpath.paths) pointTotal += Math.max(0, path.points.length - 1) * settings.passes;
   let pointDone = 0;
