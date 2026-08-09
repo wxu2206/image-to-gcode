@@ -2,6 +2,11 @@ import type { GcodeResult, MachineProfile, Move, Point, Settings, Toolpath } fro
 import { distance, machinePoint, scaleToOutput } from './geometry';
 import { validate } from './machine';
 
+export type ToolpathStats = {
+  work: number; travel: number; total: number; movementCount: number; working: number; travels: number; time: number;
+  bounds: { minX: number; maxX: number; minY: number; maxY: number; minZ: number | null; maxZ: number | null } | null;
+};
+
 const format = (value: number, precision: number) => value.toFixed(precision).replace(/\.?0+$/, '');
 const coordinates = (point: Point, settings: Settings) =>
   `X${format(point.x, settings.precision)} Y${format(point.y, settings.precision)}${point.z === undefined ? '' : ` Z${format(point.z, settings.precision)}`}`;
@@ -69,7 +74,7 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
   return { code: `${lines.join('\n')}\n`, moves, warnings: [...new Set(warnings)] };
 }
 
-export function statistics(moves: Move[]) {
+export function statistics(moves: Move[]): ToolpathStats {
   let work = 0;
   let travel = 0;
   let working = 0;
