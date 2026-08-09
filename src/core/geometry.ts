@@ -1,0 +1,6 @@
+import type { Point, Settings } from './types';
+export const mmPerInch=25.4;
+export function scaleToOutput(p:Point, sourceW:number, sourceH:number, s:Settings):Point { return {x:p.x/sourceW*s.outputWidth,y:p.y/sourceH*s.outputHeight,z:p.z}; }
+export function machinePoint(p:Point,s:Settings):Point { let x=p.x,y=p.y; if(s.origin==='center'){x-=s.outputWidth/2;y-=s.outputHeight/2}else if(s.origin==='top-left') y=s.outputHeight-y; if(s.invertX)x=s.outputWidth-x;if(s.invertY)y=s.outputHeight-y; return {x:x+s.offsetX,y:y+s.offsetY,z:p.z}; }
+export function distance(a:Point,b:Point){return Math.hypot(b.x-a.x,b.y-a.y,(b.z||0)-(a.z||0));}
+export function simplify(points:Point[], tolerance:number): Point[]{if(points.length<3)return points; const last=points[points.length-1]; const keep=(a:Point,b:Point,p:Point)=>Math.abs((b.x-a.x)*(a.y-p.y)-(a.x-p.x)*(b.y-a.y))/Math.hypot(b.x-a.x,b.y-a.y); let max=0,index=0;for(let i=1;i<points.length-1;i++){const d=keep(points[0],last,points[i]);if(d>max){max=d;index=i}}if(max>tolerance){const left:Point[]=simplify(points.slice(0,index+1),tolerance),right:Point[]=simplify(points.slice(index),tolerance);return [...left.slice(0,-1),...right]}return [points[0],last]; }

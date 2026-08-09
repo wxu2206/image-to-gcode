@@ -1,0 +1,9 @@
+import type { MachineProfile, Settings } from './types';
+export const profiles: MachineProfile[] = [
+ {id:'cnc',name:'Generic CNC Router',kind:'cnc',header:'G90\nG17',footer:'M2',toolOn:'',toolOff:'',safeZ:5,workZ:-1,passDepth:1,feed:600,travel:1800},
+ {id:'pen',name:'Generic Pen Plotter',kind:'pen',header:'G90',footer:'M2',toolOn:'',toolOff:'',safeZ:5,workZ:0,passDepth:1,feed:1500,travel:3000},
+ {id:'laser',name:'Generic XY Laser-Style',kind:'laser',header:'G90',footer:'M2',toolOn:'',toolOff:'',safeZ:0,workZ:0,passDepth:1,feed:1200,travel:3000}
+];
+export const defaults: Settings = { units:'mm',workWidth:300,workHeight:200,outputWidth:150,outputHeight:100,lockAspect:true,offsetX:0,offsetY:0,origin:'bottom-left',invertX:false,invertY:false,feed:600,travel:1800,safeZ:5,workZ:-1,maxDepth:-2,passes:1,lineSpacing:0.5,precision:3,threshold:128,serpentine:true,simplify:1,brightness:0,contrast:0,invert:false,filter:'grayscale',fit:true };
+export const loadProfiles=():MachineProfile[]=>{try{return [...profiles,...JSON.parse(localStorage.getItem('i2g-profiles')||'[]')]}catch{return profiles}};
+export function validate(s:Settings){const w:string[]=[]; if(s.workWidth<=0||s.workHeight<=0||s.outputWidth<=0||s.outputHeight<=0)w.push('Dimensions must be greater than zero.'); if(s.feed<=0||s.travel<=0)w.push('Feed rates must be positive.'); if(s.safeZ<0)w.push('Safe Z should not be negative.'); if(s.passes<1)w.push('At least one pass is required.'); if(s.outputWidth>s.workWidth||s.outputHeight>s.workHeight)w.push('Output exceeds the configured work area.'); return w;}
