@@ -4,6 +4,8 @@
 
 A browser-based image-to-G-code utility for CNC routers, pen plotters, and generic XY laser-style machines. Images remain local to the browser; there is no account or backend.
 
+Try it online: image-to-gcode.pages.dev
+
 ## Features
 
 * PNG, JPEG, and WebP import with drag/drop
