@@ -1,3 +1,8 @@
+#THIS IS CURRENTLY BROKEN DO NOT USE
+Im trying to fix it
+
+
+
 # image-to-gcode
 
 A browser-based image-to-G-code utility for CNC routers, pen plotters, and generic XY laser-style machines. Images remain local to the browser; there is no account or backend.
