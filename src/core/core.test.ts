@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { contour, orderPaths, raster } from './conversion';
 import { distance, machinePoint, scaleToOutput, simplify } from './geometry';
-import { generate, statistics } from './gcode';
+import { buildMovements, generate, statistics } from './gcode';
 import { defaults, profiles, validate } from './machine';
 import type { Move, Path, Toolpath } from './types';
 
@@ -65,6 +65,13 @@ describe('machine validation and profiles', () => {
 });
 
 describe('G-code generation', () => {
+  it('builds machine movements without eagerly allocating a G-code document', () => {
+    const geometry = buildMovements(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), settings, profiles[1]);
+    const generated = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), settings, profiles[1]);
+    expect(geometry.moves).toEqual(generated.moves);
+    expect('code' in geometry).toBe(false);
+    expect(generated.code).toContain('G1 X100 Y50');
+  });
   it('emits units, configured commands, feed rates, and safe Z', () => {
     const profile = { ...profiles[0], header: 'G17', footer: 'M2', toolOn: 'M3', toolOff: 'M5' };
     const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), settings, profile);

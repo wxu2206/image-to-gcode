@@ -1,4 +1,4 @@
-export type WorkerStage = 'image' | 'extract' | 'order' | 'movements' | 'gcode' | 'statistics';
+export type WorkerStage = 'image' | 'reduce' | 'extract' | 'order' | 'movements' | 'gcode' | 'statistics' | 'preview' | 'serialize';
 
 export type WorkerProgressMessage = {
   type: 'progress';
@@ -7,10 +7,12 @@ export type WorkerProgressMessage = {
   label: string;
   stageProgress: number;
   overallProgress: number;
+  requestId?: number;
 };
 
 export type WorkerTimings = {
   imageMs: number;
+  reductionMs: number;
   extractionMs: number;
   orderingMs: number;
   movementMs: number;
@@ -21,6 +23,8 @@ export type WorkerTimings = {
   pointCount: number;
   movementCount: number;
   gcodeCharacters: number;
+  packedMovementBytes: number;
+  transferBytes: number;
 };
 
 export type PipelineProgress = {
@@ -33,20 +37,26 @@ export type PipelineProgress = {
 // those are the measured expensive stages for dense raster and contour jobs.
 const RANGES: Record<WorkerStage, readonly [number, number]> = {
   image: [0, 0.08],
-  extract: [0.08, 0.42],
-  order: [0.42, 0.48],
-  movements: [0.48, 0.72],
+  reduce: [0.08, 0.16],
+  extract: [0.16, 0.43],
+  order: [0.43, 0.49],
+  movements: [0.49, 0.72],
   gcode: [0.72, 0.88],
   statistics: [0.88, 0.9],
+  preview: [0.9, 0.94],
+  serialize: [0, 1],
 };
 
 export const stageLabel: Record<WorkerStage, string> = {
   image: 'Processing image…',
+  reduce: 'Reducing to machine resolution…',
   extract: 'Detecting paths…',
   order: 'Ordering paths…',
   movements: 'Building machine movements…',
   gcode: 'Serializing G-code…',
   statistics: 'Calculating statistics…',
+  preview: 'Preparing preview…',
+  serialize: 'Generating G-code…',
 };
 
 export function clampProgress(value: number): number {
@@ -71,6 +81,10 @@ export function applyWorkerProgress(currentJobId: number, message: WorkerProgres
   return { label: message.label, value: clampProgress(message.overallProgress), active: true };
 }
 
+export function isCurrentPreviewRequest(currentRequestId: number, incomingRequestId: number | undefined): boolean {
+  return incomingRequestId === undefined || incomingRequestId === currentRequestId;
+}
+
 export function previewProgress(rendered: number, total: number): number {
-  return total <= 0 ? 1 : 0.9 + 0.1 * clampProgress(rendered / total);
+  return total <= 0 ? 1 : 0.94 + 0.06 * clampProgress(rendered / total);
 }

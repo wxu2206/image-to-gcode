@@ -1,9 +1,10 @@
 import type { GrayImage } from './image';
 import type { ConversionMode, Path, Point, Settings, Toolpath } from './types';
 import { distance, simplify } from './geometry';
+import { detailInOutputUnits } from './detail';
 
 const point = (x: number, y: number): Point => ({ x, y });
-export type ConversionSettings = Pick<Settings, 'lineSpacing' | 'outputHeight' | 'threshold' | 'serpentine' | 'simplify'>;
+export type ConversionSettings = Pick<Settings, 'lineSpacing' | 'outputWidth' | 'outputHeight' | 'threshold' | 'serpentine' | 'simplify' | 'toolpathDetail' | 'units'>;
 export type ConversionStage = 'extract' | 'order';
 export type ConversionProgress = (stage: ConversionStage, completed: number, total: number) => void;
 
@@ -135,8 +136,13 @@ export function contour(image: GrayImage, settings: ConversionSettings, onProgre
     }
     if (loop.length > 3 && loop[0] === loop[loop.length - 1]) {
       const openLoop = loop.slice(0, -1).map((key) => point(key % stride, Math.floor(key / stride)));
-      const reduced = simplify(openLoop, Math.max(0.1, settings.simplify));
-      const simplifiedPoints = reduced.length >= 3 ? reduced : openLoop;
+      // Contours are simplified in output coordinates so Toolpath Detail always
+      // represents a physical tolerance, independent of input pixel density.
+      const outputLoop = openLoop.map((item) => point(item.x / image.width * settings.outputWidth, item.y / image.height * settings.outputHeight));
+      const legacyTolerance = settings.simplify * Math.max(settings.outputWidth / image.width, settings.outputHeight / image.height);
+      const reduced = simplify(outputLoop, Math.max(detailInOutputUnits(settings), legacyTolerance));
+      const simplifiedPoints = (reduced.length >= 3 ? reduced : outputLoop)
+        .map((item) => point(item.x / settings.outputWidth * image.width, item.y / settings.outputHeight * image.height));
       const closed = [...simplifiedPoints, simplifiedPoints[0]];
       if (closed.length > 3) paths.push({ id: `c${id++}`, points: closed, kind: 'work' });
     }

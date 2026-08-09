@@ -12,12 +12,14 @@ const coordinates = (point: Point, settings: Settings) =>
   `X${format(point.x, settings.precision)} Y${format(point.y, settings.precision)}${point.z === undefined ? '' : ` Z${format(point.z, settings.precision)}`}`;
 export type GenerationStage = 'movements' | 'gcode';
 export type GenerationProgress = (stage: GenerationStage, completed: number, total: number) => void;
+export type MovementResult = Pick<GcodeResult, 'moves' | 'warnings'>;
+type ProgramBuild = MovementResult & { program: Array<string | Move> };
 
 function isSamePoint(a: Point, b: Point) {
   return a.x === b.x && a.y === b.y && a.z === b.z;
 }
 
-export function generate(toolpath: Toolpath, settings: Settings, profile: MachineProfile, onProgress?: GenerationProgress): GcodeResult {
+function buildProgram(toolpath: Toolpath, settings: Settings, profile: MachineProfile, onProgress?: GenerationProgress): ProgramBuild {
   const warningSet = new Set(validate(settings));
   const program: Array<string | Move> = [
     '; image-to-gcode — inspect before running',
@@ -90,6 +92,10 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
 
   if (profile.kind === 'cnc') liftToSafeZ();
   onProgress?.('movements', pointTotal, pointTotal);
+  return { program, moves, warnings: [...warningSet] };
+}
+
+function serializeProgram(program: Array<string | Move>, settings: Settings, profile: MachineProfile, onProgress?: GenerationProgress): string {
   const lines = new Array<string>(program.length);
   for (let index = 0; index < program.length; index += 1) {
     const instruction = program[index];
@@ -102,7 +108,19 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
   }
   for (const line of profile.footer.trim().split('\n')) if (line) lines.push(line);
   onProgress?.('gcode', program.length, program.length);
-  return { code: `${lines.join('\n')}\n`, moves, warnings: [...warningSet] };
+  return `${lines.join('\n')}\n`;
+}
+
+/** Builds machine geometry without retaining or serializing a G-code document. */
+export function buildMovements(toolpath: Toolpath, settings: Settings, profile: MachineProfile, onProgress?: GenerationProgress): MovementResult {
+  const { moves, warnings } = buildProgram(toolpath, settings, profile, onProgress);
+  return { moves, warnings };
+}
+
+/** Serializes only on demand; callers that only need geometry should use buildMovements. */
+export function generate(toolpath: Toolpath, settings: Settings, profile: MachineProfile, onProgress?: GenerationProgress): GcodeResult {
+  const { program, moves, warnings } = buildProgram(toolpath, settings, profile, onProgress);
+  return { code: serializeProgram(program, settings, profile, onProgress), moves, warnings };
 }
 
 export function statistics(moves: Move[], onProgress?: (completed: number, total: number) => void): ToolpathStats {
