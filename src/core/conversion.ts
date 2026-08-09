@@ -4,34 +4,40 @@ import { distance, simplify } from './geometry';
 
 const point = (x: number, y: number): Point => ({ x, y });
 const pointKey = (value: Point) => `${value.x},${value.y}`;
+export type ConversionSettings = Pick<Settings, 'lineSpacing' | 'outputHeight' | 'threshold' | 'serpentine' | 'simplify'>;
 
-/** Reorders independent paths to reduce travel without changing their geometry. */
+/**
+ * Deterministic spatial sweep for independent paths. The previous nearest-neighbor
+ * scan was O(n²) and dominated noisy contour jobs. Row buckets retain locality in
+ * O(n log n), and open paths may still reverse to reduce the immediately preceding travel.
+ */
 export function orderPaths(paths: Path[]): Path[] {
-  const remaining = paths.map((path) => ({ ...path, points: [...path.points] }));
-  const ordered: Path[] = [];
+  const rowSize = 32;
+  const ordered = [...paths].sort((a, b) => {
+    const aStart = a.points[0];
+    const bStart = b.points[0];
+    const aRow = Math.floor(aStart.y / rowSize);
+    const bRow = Math.floor(bStart.y / rowSize);
+    if (aRow !== bRow) return aRow - bRow;
+    const direction = aRow % 2 ? -1 : 1;
+    return direction * (aStart.x - bStart.x) || a.id.localeCompare(b.id);
+  });
   let cursor = point(0, 0);
-
-  while (remaining.length) {
-    const choice = remaining
-      .map((path, index) => {
-        const first = path.points[0];
-        const last = path.points[path.points.length - 1];
-        const closed = first.x === last.x && first.y === last.y;
-        const reverse = !closed
-          && distance(cursor, last) < distance(cursor, first);
-        const start = reverse ? last : first;
-        return { index, path, reverse, distance: distance(cursor, start) };
-      })
-      .sort((a, b) => a.distance - b.distance || a.path.id.localeCompare(b.path.id))[0];
-    const selected = remaining.splice(choice.index, 1)[0];
-    const points = choice.reverse ? [...selected.points].reverse() : selected.points;
-    ordered.push({ ...selected, points });
-    cursor = points[points.length - 1];
-  }
-  return ordered;
+  return ordered.map((path) => {
+    const first = path.points[0];
+    const last = path.points[path.points.length - 1];
+    const closed = first.x === last.x && first.y === last.y;
+    if (!closed && distance(cursor, last) < distance(cursor, first)) {
+      const points = [...path.points].reverse();
+      cursor = points[points.length - 1];
+      return { ...path, points };
+    }
+    cursor = last;
+    return path;
+  });
 }
 
-export function raster(image: GrayImage, settings: Settings, mode: ConversionMode = 'raster'): Toolpath {
+export function raster(image: GrayImage, settings: ConversionSettings, mode: ConversionMode = 'raster'): Toolpath {
   const paths: Path[] = [];
   const step = Math.max(1, Math.round(settings.lineSpacing / settings.outputHeight * image.height));
   let id = 0;
@@ -59,7 +65,7 @@ type Edge = { from: Point; to: Point };
  * Traces binary-pixel boundaries as connected loops. Pixels contribute only their
  * exposed cell edges; joining matching edge endpoints produces actual contour geometry.
  */
-export function contour(image: GrayImage, settings: Settings): Toolpath {
+export function contour(image: GrayImage, settings: ConversionSettings): Toolpath {
   const isDark = (x: number, y: number) => x >= 0 && y >= 0 && x < image.width && y < image.height
     && image.data[y * image.width + x] < settings.threshold;
   const outgoing = new Map<string, Edge[]>();
@@ -113,5 +119,5 @@ export function contour(image: GrayImage, settings: Settings): Toolpath {
   return { paths: orderPaths(paths), width: image.width, height: image.height, mode: 'contour' };
 }
 
-export const convert = (image: GrayImage, settings: Settings, mode: ConversionMode) =>
+export const convert = (image: GrayImage, settings: ConversionSettings, mode: ConversionMode) =>
   mode === 'contour' ? contour(image, settings) : raster(image, settings, mode);
