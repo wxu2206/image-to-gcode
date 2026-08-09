@@ -6,13 +6,13 @@ A browser-based image-to-G-code utility for CNC routers, pen plotters, and gener
 
 ## Features
 
-- PNG, JPEG, and WebP import with drag/drop
-- Raster scanline, contour/outline, and grayscale engraving conversions
-- Interactive 2D toolpath preview with work-area boundary, travel vs working moves, zoom, and playback
-- Configurable dimensions, origins, offsets, axis inversion, feeds, Z depths, passes, scan spacing, and image filters
-- Editable/persisted machine profiles for generic CNC, pen, and laser-style workflows
-- G-code inspector with line numbers, search, copy, and `.gcode` download
-- Bounds and configuration warnings plus generated movement/time statistics
+* PNG, JPEG, and WebP import with drag/drop
+* Raster scanline, contour/outline, and grayscale engraving conversions
+* Interactive 2D toolpath preview with work-area boundary, travel vs working moves, zoom, and playback
+* Configurable dimensions, origins, offsets, axis inversion, feeds, Z depths, passes, scan spacing, and image filters
+* Editable/persisted machine profiles for generic CNC, pen, and laser-style workflows
+* G-code inspector with line numbers, search, copy, and `.gcode` download
+* Bounds and configuration warnings plus generated movement/time statistics
 
 ## Getting started
 
@@ -26,6 +26,10 @@ Run quality checks with `npm test`, `npm run typecheck`, `npm run lint`, and cre
 ## Architecture
 
 `src/core/image.ts` processes pixels, `conversion.ts` converts processed images to typed geometry, `geometry.ts` performs coordinate transforms, and `gcode.ts` serializes typed moves to machine commands. React UI code in `main.tsx` only orchestrates state and rendering.
+
+## Development
+
+This project was built using a combination of human-written code and AI-assisted coding tools. AI-generated or AI-assisted changes were reviewed by a human
 
 ## Machine profiles and export
 
@@ -41,4 +45,4 @@ Contour extraction is intentionally lightweight pixel-boundary tracing; future w
 
 ## Contributing
 
-Bug reports, feature requests, and code contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the beginner-friendly workflow, development checks, and pull request guidance.
+Bug reports, feature requests, and code contributions are welcome. See CONTRIBUTING.md for the beginner-friendly workflow, development checks, and pull request guidance.
