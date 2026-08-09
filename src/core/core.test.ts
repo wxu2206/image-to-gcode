@@ -78,7 +78,7 @@ describe('G-code generation', () => {
     const generated = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), settings, profiles[1]);
     expect(geometry.moves).toEqual(generated.moves);
     expect('code' in geometry).toBe(false);
-    expect(generated.code).toContain('G1 X100 Y50');
+    expect(generated.code).toContain('G1 X100 Y0');
   });
   it('emits units, configured commands, feed rates, and safe Z', () => {
     const profile = { ...profiles[0], header: 'G17', footer: 'M2', toolOn: 'M3', toolOff: 'M5' };
@@ -87,25 +87,25 @@ describe('G-code generation', () => {
   });
   it('maps offsets, origin, and inversion identically in moves and G-code', () => {
     const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), { ...settings, offsetX: 2, offsetY: 3, invertX: true }, profiles[1]);
-    expect(result.moves.find((move) => !move.working)?.to).toMatchObject({ x: 102, y: 3 });
-    expect(result.moves.find((move) => move.working)?.to).toMatchObject({ x: 2, y: 53 });
-    expect(result.code).toContain('X102 Y3');
+    expect(result.moves.find((move) => !move.working)?.to).toMatchObject({ x: 102, y: 53 });
+    expect(result.moves.find((move) => move.working)?.to).toMatchObject({ x: 2, y: 3 });
+    expect(result.code).toContain('X102 Y53');
   });
   it('applies rotation once to final movement and G-code coordinates deterministically', () => {
     const placed = { ...settings, outputWidth: 100, outputHeight: 50, rotationDeg: 90, offsetX: 10, offsetY: 20 };
     const first = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), placed, profiles[1]);
     const second = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), placed, profiles[1]);
     expect(first.moves).toEqual(second.moves);
-    expect(first.moves.find((move) => !move.working)?.to).toMatchObject({ x: 85, y: -5 });
-    expect(first.moves.find((move) => move.working)?.to).toMatchObject({ x: 35, y: 95 });
-    expect(first.code).toContain('X85 Y-5');
+    expect(first.moves.find((move) => !move.working)?.to).toMatchObject({ x: 35, y: -5 });
+    expect(first.moves.find((move) => move.working)?.to).toMatchObject({ x: 85, y: 95 });
+    expect(first.code).toContain('X35 Y-5');
   });
   it('restarts every CNC pass at the path start and limits depth', () => {
     const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), { ...settings, passes: 3, workZ: -1, maxDepth: -2 }, { ...profiles[0], passDepth: 1 });
     const plunges = result.moves.filter((move) => move.working && move.from.z === settings.safeZ);
     expect(plunges).toHaveLength(3);
     expect(plunges.map((move) => move.to.z)).toEqual([-1, -2, -2]);
-    expect(plunges.every((move) => move.to.x === 0 && move.to.y === 0)).toBe(true);
+    expect(plunges.every((move) => move.to.x === 0 && move.to.y === 50)).toBe(true);
   });
   it('warns when transformed toolpath coordinates exceed machine bounds', () => {
     const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), { ...settings, workWidth: 50 }, profiles[1]);

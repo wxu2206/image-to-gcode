@@ -32,7 +32,9 @@ function buildProgram(toolpath: Toolpath, settings: Settings, profile: MachinePr
   let current: Point = profile.kind === 'cnc' ? { x: 0, y: 0, z: settings.safeZ } : { x: 0, y: 0 };
   const xScale = settings.outputWidth / toolpath.width;
   const yScale = settings.outputHeight / toolpath.height;
-  const mapped = (source: Point): Point => machinePoint({ x: source.x * xScale, y: source.y * yScale, z: source.z }, settings);
+  // Decoded image rows are top-to-bottom; machine geometry is bottom-to-top. Flip
+  // source Y exactly once before applying the user-selected machine transforms.
+  const mapped = (source: Point): Point => machinePoint({ x: source.x * xScale, y: settings.outputHeight - source.y * yScale, z: source.z }, settings);
   let pointTotal = 0;
   for (const path of toolpath.paths) pointTotal += Math.max(0, path.points.length - 1) * settings.passes;
   let pointDone = 0;

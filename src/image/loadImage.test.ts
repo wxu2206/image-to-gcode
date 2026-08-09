@@ -52,6 +52,17 @@ describe('image loading pipeline', () => {
     expect(toolpath.paths).toHaveLength(1);
   });
 
+  it('preserves asymmetric decoded pixel order and only inverts tone when requested', () => {
+    const source = { width: 2, height: 2, data: new Uint8ClampedArray([
+      10, 10, 10, 255, 40, 40, 40, 255,
+      90, 90, 90, 255, 200, 200, 200, 255,
+    ]) };
+    const normal = processImage(source, { brightness: 0, contrast: 0, invert: false, filter: 'grayscale', threshold: 128 });
+    const inverted = processImage(source, { brightness: 0, contrast: 0, invert: true, filter: 'grayscale', threshold: 128 });
+    expect([...normal.data]).toEqual([10, 40, 90, 200]);
+    expect([...inverted.data]).toEqual([245, 215, 165, 55]);
+  });
+
   it('rejects a file when browser decoding fails', async () => {
     class SuccessfulReader {
       result: string | ArrayBuffer | null = null;
