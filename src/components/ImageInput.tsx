@@ -18,6 +18,7 @@ export function ImageInput({ onFile, variant, children }: ImageInputProps) {
   const [busy, setBusy] = useState(false);
   const dragDepth = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const acceptRequest = useRef(0);
 
   useEffect(() => {
     const preventFileNavigation = (event: globalThis.DragEvent) => {
@@ -32,9 +33,12 @@ export function ImageInput({ onFile, variant, children }: ImageInputProps) {
   }, []);
 
   const accept = async (files: FileList | File[]) => {
+    const requestId = acceptRequest.current + 1;
+    acceptRequest.current = requestId;
     setDragActive(false);
     dragDepth.current = 0;
     if (files.length !== 1) {
+      setBusy(false);
       setError('Choose exactly one image at a time.');
       return;
     }
@@ -45,9 +49,9 @@ export function ImageInput({ onFile, variant, children }: ImageInputProps) {
       setError(null);
       await onFile(file);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'The image could not be loaded.');
+      if (requestId === acceptRequest.current) setError(reason instanceof Error ? reason.message : 'The image could not be loaded.');
     } finally {
-      setBusy(false);
+      if (requestId === acceptRequest.current) setBusy(false);
     }
   };
 

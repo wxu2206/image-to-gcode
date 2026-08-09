@@ -15,26 +15,31 @@ export const normalizeRotation = (degrees: number) => {
   return normalized === -180 ? 180 : normalized;
 };
 
+function rotationComponents(degrees: number) {
+  const radians = normalizeRotation(degrees) * Math.PI / 180;
+  const snap = (value: number) => Math.abs(value) < 1e-15 ? 0 : value;
+  return { cosine: snap(Math.cos(radians)), sine: snap(Math.sin(radians)) };
+}
+
 export const imageTransform = (settings: Pick<Settings, 'offsetX' | 'offsetY' | 'outputWidth' | 'outputHeight' | 'rotationDeg'>): ImageTransform => ({
   x: settings.offsetX, y: settings.offsetY, width: settings.outputWidth, height: settings.outputHeight, rotationDeg: normalizeRotation(settings.rotationDeg),
 });
 
 export function rotateAroundImageCenter(point: Point, settings: Pick<Settings, 'outputWidth' | 'outputHeight' | 'rotationDeg'>): Point {
-  const radians = normalizeRotation(settings.rotationDeg) * Math.PI / 180;
-  if (radians === 0) return { ...point };
+  const rotation = normalizeRotation(settings.rotationDeg);
+  if (rotation === 0) return { ...point };
   const centerX = settings.outputWidth / 2;
   const centerY = settings.outputHeight / 2;
   const dx = point.x - centerX;
   const dy = point.y - centerY;
-  const cosine = Math.cos(radians);
-  const sine = Math.sin(radians);
-  return { x: centerX + dx * cosine - dy * sine, y: centerY + dx * sine + dy * cosine, z: point.z };
+  const { cosine, sine } = rotationComponents(rotation);
+  return { ...point, x: centerX + dx * cosine - dy * sine, y: centerY + dx * sine + dy * cosine };
 }
 
 export function rotatedDimensions(width: number, height: number, rotationDeg: number) {
-  const radians = normalizeRotation(rotationDeg) * Math.PI / 180;
-  const cosine = Math.abs(Math.cos(radians));
-  const sine = Math.abs(Math.sin(radians));
+  const components = rotationComponents(rotationDeg);
+  const cosine = Math.abs(components.cosine);
+  const sine = Math.abs(components.sine);
   return { width: width * cosine + height * sine, height: width * sine + height * cosine };
 }
 
@@ -59,9 +64,9 @@ export function centerTransform(settings: Settings): Pick<Settings, 'offsetX' | 
 
 export function fitTransformToWorkArea(settings: Settings, aspectRatio: number, margin = .015): Pick<Settings, 'outputWidth' | 'outputHeight' | 'offsetX' | 'offsetY'> {
   const ratio = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : settings.outputWidth / settings.outputHeight;
-  const radians = normalizeRotation(settings.rotationDeg) * Math.PI / 180;
-  const cosine = Math.abs(Math.cos(radians));
-  const sine = Math.abs(Math.sin(radians));
+  const components = rotationComponents(settings.rotationDeg);
+  const cosine = Math.abs(components.cosine);
+  const sine = Math.abs(components.sine);
   const availableWidth = settings.workWidth * (1 - margin * 2);
   const availableHeight = settings.workHeight * (1 - margin * 2);
   const height = Math.min(availableWidth / (ratio * cosine + sine), availableHeight / (ratio * sine + cosine));

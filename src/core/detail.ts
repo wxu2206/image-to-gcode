@@ -1,18 +1,23 @@
 import type { GrayImage } from './image';
-import type { Settings, Units } from './types';
+import type { Settings } from './types';
+import { toMillimetres } from './units';
 
 export type DetailResolution = { width: number; height: number; physicalWidthMm: number; physicalHeightMm: number };
 export type DetailProgress = (completed: number, total: number) => void;
-
-const millimetres = (value: number, units: Units) => units === 'in' ? value * 25.4 : value;
 
 /**
  * Finds the useful sampling grid from physical output dimensions. The source image
  * remains the upper bound, so detail can never manufacture pixels that do not exist.
  */
 export function detailResolution(source: Pick<GrayImage, 'width' | 'height'>, settings: Pick<Settings, 'outputWidth' | 'outputHeight' | 'toolpathDetail' | 'units'>): DetailResolution {
-  const physicalWidthMm = millimetres(settings.outputWidth, settings.units);
-  const physicalHeightMm = millimetres(settings.outputHeight, settings.units);
+  if (!Number.isInteger(source.width) || !Number.isInteger(source.height) || source.width <= 0 || source.height <= 0) {
+    throw new Error('Source image dimensions must be positive integers.');
+  }
+  if (!Number.isFinite(settings.outputWidth) || !Number.isFinite(settings.outputHeight) || settings.outputWidth <= 0 || settings.outputHeight <= 0 || !Number.isFinite(settings.toolpathDetail) || settings.toolpathDetail <= 0) {
+    throw new Error('Physical detail settings must be finite and greater than zero.');
+  }
+  const physicalWidthMm = toMillimetres(settings.outputWidth, settings.units);
+  const physicalHeightMm = toMillimetres(settings.outputHeight, settings.units);
   const detail = Math.max(0.05, settings.toolpathDetail);
   return {
     width: Math.max(1, Math.min(source.width, Math.ceil(physicalWidthMm / detail))),
@@ -24,6 +29,7 @@ export function detailResolution(source: Pick<GrayImage, 'width' | 'height'>, se
 
 /** Bilinear grayscale resampling. Geometry is later scaled back to the exact requested output size. */
 export function resampleForToolpath(image: GrayImage, settings: Pick<Settings, 'outputWidth' | 'outputHeight' | 'toolpathDetail' | 'units'>, onProgress?: DetailProgress): GrayImage {
+  if (image.data.length !== image.width * image.height) throw new Error('Processed image data does not match its dimensions.');
   const target = detailResolution(image, settings);
   if (target.width === image.width && target.height === image.height) {
     onProgress?.(1, 1);

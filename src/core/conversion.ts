@@ -4,9 +4,22 @@ import { distance, simplify } from './geometry';
 import { detailInOutputUnits } from './detail';
 
 const point = (x: number, y: number): Point => ({ x, y });
+const rasterCoordinate = (index: number, size: number) => size === 1 ? 0.5 : index * size / (size - 1);
 export type ConversionSettings = Pick<Settings, 'lineSpacing' | 'outputWidth' | 'outputHeight' | 'threshold' | 'serpentine' | 'simplify' | 'toolpathDetail' | 'units'>;
 export type ConversionStage = 'extract' | 'order';
 export type ConversionProgress = (stage: ConversionStage, completed: number, total: number) => void;
+
+function assertConversionInput(image: GrayImage, settings: ConversionSettings): void {
+  const pixels = image.width * image.height;
+  if (!Number.isInteger(image.width) || !Number.isInteger(image.height) || image.width <= 0 || image.height <= 0 || !Number.isSafeInteger(pixels) || image.data.length !== pixels) {
+    throw new Error('Processed image data does not match its dimensions.');
+  }
+  if (!Number.isFinite(settings.outputWidth) || !Number.isFinite(settings.outputHeight) || settings.outputWidth <= 0 || settings.outputHeight <= 0) {
+    throw new Error('Output dimensions must be finite and greater than zero.');
+  }
+  if (!Number.isFinite(settings.lineSpacing) || settings.lineSpacing <= 0) throw new Error('Line spacing must be finite and greater than zero.');
+  if (!Number.isFinite(settings.threshold) || settings.threshold < 0 || settings.threshold > 255) throw new Error('Threshold must be between 0 and 255.');
+}
 
 /**
  * Deterministic spatial sweep for independent paths. The previous nearest-neighbor
@@ -16,17 +29,20 @@ export type ConversionProgress = (stage: ConversionStage, completed: number, tot
 export function orderPaths(paths: Path[], onProgress?: ConversionProgress): Path[] {
   const rowSize = 32;
   onProgress?.('order', 0, paths.length);
-  const ordered = [...paths].sort((a, b) => {
+  const empty = paths.filter((path) => path.points.length === 0);
+  const ordered = paths.filter((path) => path.points.length > 0).sort((a, b) => {
     const aStart = a.points[0];
     const bStart = b.points[0];
     const aRow = Math.floor(aStart.y / rowSize);
     const bRow = Math.floor(bStart.y / rowSize);
     if (aRow !== bRow) return aRow - bRow;
     const direction = aRow % 2 ? -1 : 1;
-    return direction * (aStart.x - bStart.x) || a.id.localeCompare(b.id);
+    const position = direction * (aStart.x - bStart.x);
+    if (position) return position;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
   let cursor = point(0, 0);
-  const result: Path[] = new Array(ordered.length);
+  const result: Path[] = new Array(paths.length);
   for (let index = 0; index < ordered.length; index += 1) {
     const path = ordered[index];
     const first = path.points[0];
@@ -42,37 +58,43 @@ export function orderPaths(paths: Path[], onProgress?: ConversionProgress): Path
     }
     if (index % 1024 === 0) onProgress?.('order', index, ordered.length);
   }
-  onProgress?.('order', ordered.length, ordered.length);
+  for (let index = 0; index < empty.length; index += 1) result[ordered.length + index] = empty[index];
+  onProgress?.('order', paths.length, paths.length);
   return result;
 }
 
 export function raster(image: GrayImage, settings: ConversionSettings, mode: ConversionMode = 'raster', onProgress?: ConversionProgress): Toolpath {
+  assertConversionInput(image, settings);
   const paths: Path[] = [];
   const step = Math.max(1, Math.round(settings.lineSpacing / settings.outputHeight * image.height));
   let id = 0;
   for (let y = 0, line = 0; y < image.height; y += step, line += 1) {
+    const linePaths: Path[] = [];
     let run: Point[] = [];
+    const pathY = rasterCoordinate(y, image.height);
     for (let x = 0; x < image.width; x += 1) {
       const intensity = image.data[y * image.width + x];
-      if (intensity < settings.threshold || mode === 'grayscale') run.push(point(x, y));
+      if (intensity < settings.threshold || mode === 'grayscale') {
+        const pathX = rasterCoordinate(x, image.width);
+        run.push(mode === 'grayscale' ? { x: pathX, y: pathY, intensity: (255 - intensity) / 255 } : point(pathX, pathY));
+      }
       else if (run.length > 1) {
-        paths.push({ id: `r${id++}`, points: run, kind: 'work', intensity: 255 - intensity });
+        linePaths.push({ id: `r${id++}`, points: run, kind: 'work' });
         run = [];
       } else run = [];
     }
-    if (run.length > 1) paths.push({ id: `r${id++}`, points: run, kind: 'work', intensity: 255 - image.data[y * image.width] });
+    if (run.length > 1) linePaths.push({ id: `r${id++}`, points: run, kind: 'work' });
+    if (settings.serpentine && line % 2) {
+      linePaths.reverse();
+      for (const path of linePaths) path.points.reverse();
+    }
+    for (const path of linePaths) paths.push(path);
     if (line % 16 === 0) onProgress?.('extract', y, image.height);
   }
   onProgress?.('extract', image.height, image.height);
   onProgress?.('order', 0, paths.length);
-  const ordered = settings.serpentine
-    ? paths.map((path, index) => {
-      if (index % 1024 === 0) onProgress?.('order', index, paths.length);
-      return index % 2 ? { ...path, points: [...path.points].reverse() } : path;
-    })
-    : paths;
   onProgress?.('order', paths.length, paths.length);
-  return { paths: ordered, width: image.width, height: image.height, mode };
+  return { paths, width: image.width, height: image.height, mode };
 }
 
 /**
@@ -83,6 +105,7 @@ export function raster(image: GrayImage, settings: ConversionSettings, mode: Con
  * left-to-right edge ordering as the original implementation.
  */
 export function contour(image: GrayImage, settings: ConversionSettings, onProgress?: ConversionProgress): Toolpath {
+  assertConversionInput(image, settings);
   const stride = image.width + 1;
   const outgoing = new Map<number, number[]>();
   let edgeCount = 0;

@@ -72,4 +72,23 @@ describe('ImageInput', () => {
     await waitFor(() => expect(onFile).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
+
+  it('ignores an older failure after a newer selection has started', async () => {
+    let rejectFirst!: (reason: Error) => void;
+    let resolveSecond!: () => void;
+    const firstRequest = new Promise<void>((_resolve, reject) => { rejectFirst = reject; });
+    const secondRequest = new Promise<void>((resolve) => { resolveSecond = resolve; });
+    const onFile = vi.fn().mockReturnValueOnce(firstRequest).mockReturnValueOnce(secondRequest);
+    render(<ImageInput variant="toolbar" onFile={onFile}/>);
+    const input = screen.getByLabelText('Choose image');
+    fireEvent.change(input, { target: { files: [file('old.png', 'image/png')] } });
+    await waitFor(() => expect(onFile).toHaveBeenCalledTimes(1));
+    fireEvent.change(input, { target: { files: [file('new.png', 'image/png')] } });
+    await waitFor(() => expect(onFile).toHaveBeenCalledTimes(2));
+    rejectFirst(new Error('Old decode failed.'));
+    await Promise.resolve();
+    expect(screen.queryByRole('alert')).toBeNull();
+    resolveSecond();
+    await waitFor(() => expect(screen.getByText('Import image').closest('label')?.getAttribute('aria-busy')).toBe('false'));
+  });
 });

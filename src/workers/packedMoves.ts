@@ -22,10 +22,19 @@ export function packMoves(moves: readonly Move[]): PackedMoves {
     coordinates[offset + 1] = move.from.y;
     coordinates[offset + 2] = move.to.x;
     coordinates[offset + 3] = move.to.y;
-    flags[index] = (move.working ? WORKING : 0) | (move.command === 'G1' ? G1 : 0) | (move.pathId !== previousPath ? PATH_START : 0);
+    if (![move.from.x, move.from.y, move.to.x, move.to.y].every(Number.isFinite)) {
+      throw new Error('Cannot pack a movement with non-finite XY coordinates.');
+    }
+    flags[index] = (move.working ? WORKING : 0) | (move.command === 'G1' ? G1 : 0) | (index === 0 || move.pathId !== previousPath ? PATH_START : 0);
     previousPath = move.pathId;
   }
   return { coordinates, flags, count: moves.length };
+}
+
+export function assertPackedMoves(packed: PackedMoves): void {
+  if (!Number.isInteger(packed.count) || packed.count < 0 || packed.coordinates.length !== packed.count * 4 || packed.flags.length !== packed.count) {
+    throw new Error('Packed movement buffers have inconsistent lengths.');
+  }
 }
 
 export function packedMoveBytes(packed: PackedMoves): number {
@@ -38,6 +47,7 @@ function sameVisualRun(flagsA: number, flagsB: number): boolean {
 
 /** Decimates directly from packed data, avoiding an intermediate full object array. */
 export function previewFromPacked(packed: PackedMoves, quality: PreviewQuality, onProgress?: PreviewProgress): Move[] {
+  assertPackedMoves(packed);
   const budget = previewBudgets[quality];
   if (!packed.count) return [];
   let runCount = 1;

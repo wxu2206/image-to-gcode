@@ -32,7 +32,7 @@ describe('raster conversion and ordering', () => {
     const toolpath = raster(image(4, 2, [0, 0, 0, 0, 0, 0, 0, 0]), { ...settings, lineSpacing: 25 });
     expect(toolpath.paths).toHaveLength(2);
     expect(toolpath.paths[0].points[0].x).toBe(0);
-    expect(toolpath.paths[1].points[0].x).toBe(3);
+    expect(toolpath.paths[1].points[0].x).toBe(4);
   });
   it('does not emit isolated dark pixels or empty runs', () => expect(raster(image(5, 1, [255, 0, 255, 0, 255]), settings).paths).toHaveLength(0));
   it('orders independent paths deterministically by travel distance', () => {
@@ -86,7 +86,7 @@ describe('G-code generation', () => {
     expect(result.code).toContain('G21'); expect(result.code).toContain('G17'); expect(result.code).toContain('M3'); expect(result.code).toContain('M5'); expect(result.code).toContain('G0 Z5'); expect(result.code).toContain('F600');
   });
   it('keeps custom machine commands as literal G-code text', () => {
-    const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), settings, { ...profiles[1], header: '<script>alert(1)</script>', toolOn: '<b>ON</b>' });
+    const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), settings, { ...profiles[1], header: '<script>alert(1)</script>', toolOn: '<b>ON</b>', toolOff: '<b>OFF</b>' });
     expect(result.code).toContain('<script>alert(1)</script>');
     expect(result.code).toContain('<b>ON</b>');
   });

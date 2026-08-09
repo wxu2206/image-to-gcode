@@ -12,8 +12,8 @@ describe('source image orientation', () => {
     const toolpath = raster(image, settings);
     const moves = buildMovements(toolpath, settings, profiles[1]).moves.filter((move) => move.working);
     expect(moves[0].from).toMatchObject({ x: 0, y: 20 }); // source top-left
-    expect(moves[0].to).toMatchObject({ x: 10, y: 20 }); // source top-right run
-    expect(moves[1].from).toMatchObject({ x: 30, y: 10 }); // source bottom-left run
-    expect(moves[1].to).toMatchObject({ x: 20, y: 10 }); // source bottom-right run
+    expect(moves[0].to).toMatchObject({ x: 13.333, y: 20 }); // source top-right run
+    expect(moves[1].from).toMatchObject({ x: 40, y: 0 }); // source bottom-right
+    expect(moves[1].to).toMatchObject({ x: 26.667, y: 0 }); // source bottom-left run
   });
 });

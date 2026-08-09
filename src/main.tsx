@@ -8,17 +8,26 @@ import { estimateComplexity } from './core/complexity';
 import type { ToolpathStats } from './core/gcode';
 import type { ConversionMode, Move, PreviewQuality, Settings } from './core/types';
 import { decodeImageFile, readImagePixels } from './image/loadImage';
-import { applyWorkerProgress, initialProgress, isCurrentPreviewRequest, previewProgress, startingProgress, type PipelineProgress, type WorkerProgressMessage, type WorkerTimings } from './workers/progress';
+import { applyWorkerProgress, initialProgress, isCurrentPreviewRequest, previewProgress, startingProgress, type PipelineProgress, type WorkerTimings } from './workers/progress';
 import { fitViewport, zoomAtCursor, type Viewport } from './visualization/viewport';
 import { centerTransform, fitTransformToWorkArea, normalizeRotation } from './core/transform';
 import { transformedBounds } from './core/transform';
 import { machinePoint } from './core/geometry';
 import { buildExportReview } from './core/exportReview';
+import { canonicalJobKey, isCurrentJobRevision, isCurrentRevision } from './core/jobRevision';
+import { convertSettingsUnits } from './core/units';
 import { gcodeFilename } from './utils/filename';
+import { isWorkerMessage, type WorkerMessage } from './workers/messages';
 import './style.css';
 
 const machineNumKeys = ['workWidth', 'workHeight', 'feed', 'travel', 'safeZ', 'workZ', 'maxDepth', 'passes', 'lineSpacing', 'precision'] as const;
 const imageProcessNumKeys = ['threshold', 'simplify', 'brightness', 'contrast'] as const;
+const readLocalSetting = (key: string) => {
+  try { return localStorage.getItem(key); } catch { return null; }
+};
+const writeLocalSetting = (key: string, value: string) => {
+  try { localStorage.setItem(key, value); } catch { /* Persistence is optional; the active job remains usable. */ }
+};
 const detailLabel = (value: number) => value <= 0.1 ? 'Very Fine' : value <= 0.2 ? 'Fine' : value <= 0.35 ? 'Normal' : value <= 0.5 ? 'Coarse' : value <= 0.75 ? 'Fast' : 'Very Fast';
 const visibleGcodeLines = (code: string, search: string) => {
   if (!search) return { lines: code.split('\n', 2_000), start: 1 };
@@ -29,21 +38,25 @@ const visibleGcodeLines = (code: string, search: string) => {
   for (let index = 0; index < startOffset; index += 1) if (code.charCodeAt(index) === 10) start += 1;
   return { lines: code.slice(startOffset).split('\n', 200), start };
 };
-type RuntimeTimings = WorkerTimings & { transferMs: number; previewPreparationMs: number | null; previewSegments: number; previewMs: number | null };
-type JobSummary = { id: number; warnings: string[] };
-type LoadedGcode = { code: string; characters: number; lines: number };
-type WorkerMessage =
-  | WorkerProgressMessage
-  | { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number }
-  | { type: 'preview-result'; id: number; requestId: number; moves: Move[]; segments: number; previewMs: number }
-  | { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number }
-  | { type: 'error'; id: number; message: string };
-
-const workerMessage = (value: unknown): value is WorkerMessage => {
-  if (typeof value !== 'object' || value === null) return false;
-  const message = value as { type?: unknown; id?: unknown };
-  return typeof message.type === 'string' && ['progress', 'result', 'preview-result', 'gcode-result', 'error'].includes(message.type) && typeof message.id === 'number' && Number.isFinite(message.id);
+const downloadGcodeDocument = (code: string, filename: string) => {
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(new Blob([code], { type: 'text/x-gcode;charset=utf-8' }));
+  try {
+    link.href = url;
+    link.download = filename;
+    link.click();
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  }
 };
+const copyGcodeDocument = (code: string) => {
+  if (!navigator.clipboard?.writeText) return Promise.reject(new Error('Clipboard API unavailable.'));
+  return navigator.clipboard.writeText(code);
+};
+type RuntimeTimings = WorkerTimings & { transferMs: number; previewPreparationMs: number | null; previewSegments: number; previewMs: number | null };
+type JobSummary = { id: number; key: string; warnings: string[] };
+type LoadedGcode = { jobId: number; key: string; code: string; characters: number; lines: number };
+type LoadedImage = { naturalWidth: number; naturalHeight: number };
 
 function PlacementControls({ settings, aspectRatio, update }: { settings: Settings; aspectRatio: number; update: (values: Partial<Settings>) => void }) {
   const resize = (key: 'outputWidth' | 'outputHeight', value: number) => {
@@ -59,11 +72,15 @@ function PlacementControls({ settings, aspectRatio, update }: { settings: Settin
 export function App() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [profiles, setProfiles] = useState(loadProfiles);
-  const [profileId, setProfileId] = useState(() => localStorage.getItem('i2g-profile') || 'cnc');
+  const [profileId, setProfileId] = useState(() => {
+    const stored = readLocalSetting('i2g-profile') || 'cnc';
+    return profiles.some((item) => item.id === stored) ? stored : 'cnc';
+  });
   const profile = profiles.find((item) => item.id === profileId) || profiles[0];
   const [mode, setMode] = useState<ConversionMode>('raster');
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  const [image, setImage] = useState<LoadedImage | null>(null);
   const [sourcePixels, setSourcePixels] = useState<ImageData | null>(null);
+  const [sourceRevision, setSourceRevision] = useState(0);
   const [name, setName] = useState('');
   const [jobResult, setJobResult] = useState<JobSummary | null>(null);
   const [previewMoves, setPreviewMoves] = useState<Move[] | null>(null);
@@ -78,6 +95,7 @@ export function App() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [editPlacement, setEditPlacement] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewKey, setReviewKey] = useState<string | null>(null);
   const [stablePlacement, setStablePlacement] = useState(() => ({ outputWidth: settings.outputWidth, outputHeight: settings.outputHeight, offsetX: settings.offsetX, offsetY: settings.offsetY, rotationDeg: settings.rotationDeg }));
   const [playing, setPlaying] = useState(false);
   const [playbackProgress, setPlaybackProgress] = useState(0);
@@ -89,7 +107,9 @@ export function App() {
   const jobRef = useRef(0);
   const previewRequestRef = useRef(0);
   const gcodeRequestRef = useRef(0);
-  const pendingGcodeAction = useRef<'inspect' | 'copy' | 'download' | null>(null);
+  const pendingGcodeAction = useRef<{ action: 'inspect' | 'copy' | 'download'; key: string } | null>(null);
+  const uploadRequestRef = useRef(0);
+  const currentJobKeyRef = useRef<string | null>(null);
   const nameRef = useRef('');
   const renderRef = useRef(0);
   const renderedPreviewRef = useRef<Move[] | null>(null);
@@ -102,8 +122,8 @@ export function App() {
   const drag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const placementDrag = useRef<{ action: 'move' | 'resize'; x: number; y: number; offsetX: number; offsetY: number; width: number; height: number; centerX: number; centerY: number } | null>(null);
 
-  useEffect(() => localStorage.setItem('i2g-settings', JSON.stringify(settings)), [settings]);
-  useEffect(() => localStorage.setItem('i2g-profile', profileId), [profileId]);
+  useEffect(() => writeLocalSetting('i2g-settings', JSON.stringify(settings)), [settings]);
+  useEffect(() => writeLocalSetting('i2g-profile', profileId), [profileId]);
   useEffect(() => { nameRef.current = name; }, [name]);
   useEffect(() => () => workerRef.current?.terminate(), []);
   useEffect(() => () => cancelAnimationFrame(panFrameRef.current), []);
@@ -124,53 +144,91 @@ export function App() {
   // only an alternate preview stream from the already-completed worker job.
   const workerSettings = useMemo<Settings>(() => ({
     units: settings.units, workWidth: settings.workWidth, workHeight: settings.workHeight, outputWidth: stablePlacement.outputWidth, outputHeight: stablePlacement.outputHeight,
-    lockAspect: settings.lockAspect, offsetX: stablePlacement.offsetX, offsetY: stablePlacement.offsetY, rotationDeg: stablePlacement.rotationDeg, origin: settings.origin, invertX: settings.invertX, invertY: settings.invertY,
+    lockAspect: false, offsetX: stablePlacement.offsetX, offsetY: stablePlacement.offsetY, rotationDeg: stablePlacement.rotationDeg, origin: settings.origin, invertX: settings.invertX, invertY: settings.invertY,
     feed: settings.feed, travel: settings.travel, safeZ: settings.safeZ, workZ: settings.workZ, maxDepth: settings.maxDepth, passes: settings.passes,
     lineSpacing: settings.lineSpacing, precision: settings.precision, threshold: settings.threshold, serpentine: settings.serpentine, simplify: settings.simplify,
-    toolpathDetail: settings.toolpathDetail, previewQuality: 'balanced', brightness: settings.brightness, contrast: settings.contrast, invert: settings.invert, filter: settings.filter, fit: settings.fit,
-  }), [settings.units, settings.workWidth, settings.workHeight, stablePlacement, settings.lockAspect, settings.origin, settings.invertX, settings.invertY, settings.feed, settings.travel, settings.safeZ, settings.workZ, settings.maxDepth, settings.passes, settings.lineSpacing, settings.precision, settings.threshold, settings.serpentine, settings.simplify, settings.toolpathDetail, settings.brightness, settings.contrast, settings.invert, settings.filter, settings.fit]);
-  const conversionSettings = useMemo(() => ({
-    lineSpacing: workerSettings.lineSpacing, outputWidth: workerSettings.outputWidth, outputHeight: workerSettings.outputHeight,
-    threshold: workerSettings.threshold, serpentine: workerSettings.serpentine, simplify: workerSettings.simplify,
-    toolpathDetail: workerSettings.toolpathDetail, units: workerSettings.units,
-  }), [workerSettings]);
+    toolpathDetail: settings.toolpathDetail, previewQuality: 'balanced', brightness: settings.brightness, contrast: settings.contrast, invert: settings.invert, filter: settings.filter, fit: false,
+  }), [settings.units, settings.workWidth, settings.workHeight, stablePlacement, settings.origin, settings.invertX, settings.invertY, settings.feed, settings.travel, settings.safeZ, settings.workZ, settings.maxDepth, settings.passes, settings.lineSpacing, settings.precision, settings.threshold, settings.serpentine, settings.simplify, settings.toolpathDetail, settings.brightness, settings.contrast, settings.invert, settings.filter]);
   const complexity = useMemo(() => sourcePixels ? estimateComplexity(sourcePixels, workerSettings, mode) : null, [sourcePixels, workerSettings, mode]);
-  const complexityKey = complexity && `${sourcePixels?.width}x${sourcePixels?.height}:${mode}:${workerSettings.toolpathDetail}:${workerSettings.lineSpacing}:${workerSettings.outputWidth}:${workerSettings.outputHeight}`;
+  const complexityKey = useMemo(() => complexity
+    ? JSON.stringify([sourceRevision, mode, workerSettings.units, workerSettings.toolpathDetail, workerSettings.lineSpacing, workerSettings.outputWidth, workerSettings.outputHeight, workerSettings.passes])
+    : null, [complexity, sourceRevision, mode, workerSettings]);
+  const jobKey = useMemo(() => sourcePixels
+    ? canonicalJobKey(sourceRevision, workerSettings, profile, mode)
+    : null, [sourcePixels, sourceRevision, workerSettings, profile, mode]);
+  currentJobKeyRef.current = jobKey;
   const placementPending = settings.outputWidth !== stablePlacement.outputWidth || settings.outputHeight !== stablePlacement.outputHeight || settings.offsetX !== stablePlacement.offsetX || settings.offsetY !== stablePlacement.offsetY || settings.rotationDeg !== stablePlacement.rotationDeg;
-  const review = useMemo(() => buildExportReview({ settings, stats, profile, warnings: jobResult?.warnings ?? [], placementPending, current: jobResult?.id === jobRef.current }), [settings, stats, profile, jobResult, placementPending]);
+  const currentJobResult = isCurrentJobRevision(jobResult, jobRef.current, jobKey) ? jobResult : null;
+  const currentStats = currentJobResult ? stats : null;
+  const currentTimings = currentJobResult ? timings : null;
+  const currentPreviewMoves = currentJobResult ? previewMoves : null;
+  const currentGcode = currentJobResult && isCurrentRevision(gcode?.key, jobKey) && gcode?.jobId === currentJobResult.id ? gcode : null;
+  const reviewedRevisionCurrent = !reviewOpen || reviewKey === jobKey;
+  const validWorkArea = Number.isFinite(settings.workWidth) && Number.isFinite(settings.workHeight) && settings.workWidth > 0 && settings.workHeight > 0;
+  const review = useMemo(() => buildExportReview({
+    settings,
+    stats: currentStats,
+    profile,
+    warnings: currentJobResult?.warnings ?? [],
+    placementPending,
+    current: Boolean(currentJobResult) && reviewedRevisionCurrent,
+  }), [settings, currentStats, profile, currentJobResult, placementPending, reviewedRevisionCurrent]);
 
   useEffect(() => {
-    if (!sourcePixels) return;
-    if (complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey) {
-      setPipeline({ label: 'Extreme job needs confirmation', value: 0, active: false });
-      setWorkerError(`Estimated ${complexity.movements.toLocaleString()} movements. Recommended detail: ${complexity.recommendedDetail.toFixed(2)} mm or coarser.`);
-      return;
-    }
+    if (!sourcePixels || !jobKey) return;
     const id = jobRef.current + 1;
     jobRef.current = id;
     workerRef.current?.terminate();
-    const worker = new Worker(new URL('./workers/toolpath.worker.ts', import.meta.url), { type: 'module' });
-    workerRef.current = worker;
     setJobResult(null);
     setPreviewMoves(null);
     setGcode(null);
     setGcodeState('idle');
     setStats(null);
     setTimings(null);
+    setPlaying(false);
+    setPlaybackProgress(0);
+    pendingGcodeAction.current = null;
+    if (complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey) {
+      setPipeline({ label: 'Extreme job needs confirmation', value: 0, active: false });
+      setWorkerError(`Estimated ${complexity.movements.toLocaleString()} movements. Recommended detail: ${complexity.recommendedDetail.toFixed(2)} mm or coarser.`);
+      return;
+    }
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL('./workers/toolpath.worker.ts', import.meta.url), { type: 'module' });
+    } catch {
+      setPipeline({ label: 'Processing failed', value: 0, active: false });
+      setWorkerError('This browser could not start the toolpath worker.');
+      return;
+    }
+    workerRef.current = worker;
     setPipeline(startingProgress());
     setWorkerError(null);
 
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const message: unknown = event.data;
-      if (!workerMessage(message)) return;
+      if (worker !== workerRef.current) return;
+      if (!isWorkerMessage(message)) {
+        worker.terminate();
+        setWorkerError('Toolpath worker returned an invalid response.');
+        setPipeline({ label: 'Processing failed', value: 0, active: false });
+        setGcodeState('error');
+        setJobResult(null);
+        setPreviewMoves(null);
+        setStats(null);
+        setTimings(null);
+        pendingGcodeAction.current = null;
+        return;
+      }
       if (message.id !== jobRef.current) return;
+      if (jobKey !== currentJobKeyRef.current) return;
       if (message.type === 'progress') {
         if (message.stage === 'preview' && !isCurrentPreviewRequest(previewRequestRef.current, message.requestId)) return;
         if (message.stage === 'serialize' && !isCurrentPreviewRequest(gcodeRequestRef.current, message.requestId)) return;
         const next = applyWorkerProgress(jobRef.current, message);
         if (next) setPipeline(next);
       } else if (message.type === 'result') {
-        setJobResult({ id: message.id, warnings: message.warnings });
+        setJobResult({ id: message.id, key: jobKey, warnings: message.warnings });
         setStats(message.stats);
         setPipeline({ label: 'Preparing preview…', value: 0.9, active: true });
         setTimings({ ...message.timings, transferMs: Math.max(0, performance.timeOrigin + performance.now() - message.sentAt), previewPreparationMs: null, previewSegments: 0, previewMs: null });
@@ -181,50 +239,80 @@ export function App() {
         setTimings((current) => current ? { ...current, previewPreparationMs: message.previewMs, previewSegments: message.segments } : current);
       } else if (message.type === 'gcode-result') {
         if (!isCurrentPreviewRequest(gcodeRequestRef.current, message.requestId)) return;
-        const next = { code: message.code, characters: message.characters, lines: message.lines };
+        const next = { jobId: message.id, key: jobKey, code: message.code, characters: message.characters, lines: message.lines };
         setGcode(next);
         setGcodeState('ready');
         setPipeline({ label: 'Ready', value: 1, active: false });
-        const action = pendingGcodeAction.current;
+        const pending = pendingGcodeAction.current;
         pendingGcodeAction.current = null;
-        if (action === 'copy') void navigator.clipboard.writeText(next.code);
-        if (action === 'download') {
-          const link = document.createElement('a');
-          const url = URL.createObjectURL(new Blob([next.code], { type: 'text/plain' }));
-          link.href = url; link.download = gcodeFilename(nameRef.current, mode); link.click();
-          setTimeout(() => URL.revokeObjectURL(url), 1_000);
+        if (!pending || pending.key !== jobKey) return;
+        if (pending.action === 'copy') void copyGcodeDocument(next.code).catch(() => setWorkerError('The browser could not copy G-code to the clipboard.'));
+        if (pending.action === 'download') {
+          try {
+            downloadGcodeDocument(next.code, gcodeFilename(nameRef.current, mode));
+          } catch {
+            setWorkerError('The browser could not create the G-code download.');
+          }
         }
       } else if (message.type === 'error') {
+        if (message.requestId !== undefined) {
+          const expected = message.stage === 'serialize' ? gcodeRequestRef.current : previewRequestRef.current;
+          if (!isCurrentPreviewRequest(expected, message.requestId)) return;
+        }
         setWorkerError(message.message);
         setPipeline({ label: 'Processing failed', value: 0, active: false });
+        pendingGcodeAction.current = null;
+        if (message.stage === 'serialize') setGcodeState('error');
+        if (message.stage === 'run') {
+          setJobResult(null);
+          setPreviewMoves(null);
+          setStats(null);
+          setTimings(null);
+        }
       }
     };
     worker.onerror = () => {
       if (id === jobRef.current) {
         setWorkerError('Toolpath worker stopped unexpectedly.');
         setPipeline({ label: 'Processing failed', value: 0, active: false });
+        setGcodeState('error');
+        setJobResult(null);
+        setPreviewMoves(null);
+        setStats(null);
+        setTimings(null);
+        pendingGcodeAction.current = null;
       }
     };
     // Keep ImageData in React state for restarts; the per-job copy is then transferred,
     // not structured-cloned, to the worker.
     const data = sourcePixels.data.slice();
-    worker.postMessage({
-      type: 'run', id, pixels: { width: sourcePixels.width, height: sourcePixels.height, data: data.buffer },
-      imageSettings: { brightness: workerSettings.brightness, contrast: workerSettings.contrast, invert: workerSettings.invert, filter: workerSettings.filter, threshold: workerSettings.threshold },
-      conversionSettings, settings: workerSettings, profile, mode,
-    }, [data.buffer]);
+    try {
+      worker.postMessage({
+        type: 'run', id, pixels: { width: sourcePixels.width, height: sourcePixels.height, data: data.buffer },
+        settings: workerSettings, profile, mode,
+      }, [data.buffer]);
+    } catch {
+      worker.terminate();
+      setPipeline({ label: 'Processing failed', value: 0, active: false });
+      setWorkerError('The toolpath job could not be sent to the worker.');
+    }
     return () => worker.terminate();
-  }, [sourcePixels, workerSettings, profile, mode, conversionSettings, complexity, complexityKey, approvedExtremeKey]);
+  }, [sourcePixels, workerSettings, profile, mode, complexity, complexityKey, approvedExtremeKey, jobKey]);
 
   useEffect(() => {
-    if (!jobResult) return;
+    if (!currentJobResult || !jobKey) return;
     const id = jobRef.current;
     const requestId = previewRequestRef.current + 1;
     previewRequestRef.current = requestId;
     setPreviewMoves(null);
     setPipeline({ label: 'Preparing preview…', value: 0.9, active: true });
-    workerRef.current?.postMessage({ type: 'prepare-preview', id, requestId, quality: settings.previewQuality });
-  }, [jobResult, settings.previewQuality]);
+    try {
+      workerRef.current?.postMessage({ type: 'prepare-preview', id, requestId, quality: settings.previewQuality });
+    } catch {
+      setPipeline({ label: 'Preview failed', value: 0.9, active: false });
+      setWorkerError('The preview request could not be sent to the worker.');
+    }
+  }, [currentJobResult, jobKey, settings.previewQuality]);
 
   useEffect(() => {
     const element = canvas.current;
@@ -233,6 +321,11 @@ export function App() {
     if (!context) return;
     const width = element.width;
     const height = element.height;
+    if (!validWorkArea) {
+      context.fillStyle = '#101318';
+      context.fillRect(0, 0, width, height);
+      return;
+    }
     const scale = Math.min((width - 40) / settings.workWidth, (height - 40) / settings.workHeight) * zoom;
     const originX = (width - settings.workWidth * scale) / 2 + pan.x;
     const originY = (height - settings.workHeight * scale) / 2 + pan.y;
@@ -265,13 +358,13 @@ export function App() {
     };
     clearAndFrame();
     const cached = cachedPreviewRef.current;
-    if (previewMoves !== null && cached?.moves === previewMoves && cached.workHeight === settings.workHeight) {
+    if (currentPreviewMoves !== null && cached?.moves === currentPreviewMoves && cached.workHeight === settings.workHeight) {
       stroke(cached.work, cached.travel);
       return;
     }
-    const moves = previewMoves ?? [];
-    const initialRender = previewMoves !== null && renderedPreviewRef.current !== previewMoves;
-    if (initialRender) renderedPreviewRef.current = previewMoves;
+    const moves = currentPreviewMoves ?? [];
+    const initialRender = currentPreviewMoves !== null && renderedPreviewRef.current !== currentPreviewMoves;
+    if (initialRender) renderedPreviewRef.current = currentPreviewMoves;
     const generation = renderRef.current + 1;
     renderRef.current = generation;
     const started = performance.now();
@@ -283,7 +376,7 @@ export function App() {
     let cancelled = false;
     const finish = () => {
       if (cancelled || generation !== renderRef.current || !initialRender) return;
-      cachedPreviewRef.current = { moves: previewMoves!, workHeight: settings.workHeight, work: completeWork, travel: completeTravel };
+      cachedPreviewRef.current = { moves: currentPreviewMoves!, workHeight: settings.workHeight, work: completeWork, travel: completeTravel };
       setPipeline({ label: 'Ready', value: 1, active: false });
       setTimings((current) => current ? { ...current, previewMs: performance.now() - started } : current);
     };
@@ -309,7 +402,7 @@ export function App() {
     if (moves.length) frame = requestAnimationFrame(draw);
     else finish();
     return () => { cancelled = true; cancelAnimationFrame(frame); };
-  }, [image, previewMoves, settings, editPlacement, zoom, pan]);
+  }, [image, currentPreviewMoves, settings, editPlacement, zoom, pan, validWorkArea]);
 
   useEffect(() => {
     const element = playbackCanvas.current;
@@ -317,7 +410,8 @@ export function App() {
     const context = element.getContext('2d');
     if (!context) return;
     context.clearRect(0, 0, element.width, element.height);
-    const moves = previewMoves;
+    if (!validWorkArea) return;
+    const moves = currentPreviewMoves;
     if (!moves?.length) return;
     const move = moves[Math.min(moves.length - 1, Math.floor(moves.length * playbackProgress))];
     const scale = Math.min((element.width - 40) / settings.workWidth, (element.height - 40) / settings.workHeight) * zoom;
@@ -327,18 +421,20 @@ export function App() {
     context.beginPath();
     context.arc(originX + move.to.x * scale, originY + (settings.workHeight - move.to.y) * scale, 4, 0, 7);
     context.fill();
-  }, [image, previewMoves, settings.workWidth, settings.workHeight, zoom, pan, playbackProgress]);
+  }, [image, currentPreviewMoves, settings.workWidth, settings.workHeight, zoom, pan, playbackProgress, validWorkArea]);
 
   useEffect(() => {
-    if (!playing || !previewMoves) return;
+    if (!playing || !currentPreviewMoves) return;
     const timer = window.setInterval(() => setPlaybackProgress((current) => {
       if (current >= 1) { setPlaying(false); return 1; }
       return current + 0.01;
     }), 100);
     return () => window.clearInterval(timer);
-  }, [playing, previewMoves]);
+  }, [playing, currentPreviewMoves]);
 
   const upload = async (file: File) => {
+    const uploadId = uploadRequestRef.current + 1;
+    uploadRequestRef.current = uploadId;
     jobRef.current += 1;
     workerRef.current?.terminate();
     setImage(null); setSourcePixels(null); setJobResult(null); setPreviewMoves(null); setGcode(null); setGcodeState('idle'); setStats(null); setTimings(null);
@@ -347,15 +443,35 @@ export function App() {
     try {
       const decoded = await decodeImageFile(file);
       const pixels = readImagePixels(decoded);
-      setImage(decoded); setSourcePixels(pixels); setName(file.name); setZoom(1); setPan({ x: 0, y: 0 });
-      if (settings.lockAspect) setSettings((current) => ({ ...current, outputHeight: current.outputWidth * decoded.naturalHeight / decoded.naturalWidth }));
+      const dimensions = { naturalWidth: decoded.naturalWidth, naturalHeight: decoded.naturalHeight };
+      decoded.removeAttribute('src');
+      if (uploadId !== uploadRequestRef.current) return;
+      nameRef.current = file.name;
+      setImage(dimensions); setSourcePixels(pixels); setName(file.name); setZoom(1); setPan({ x: 0, y: 0 });
+      setSourceRevision((current) => current + 1);
+      setSettings((current) => current.lockAspect
+        ? { ...current, outputHeight: current.outputWidth * dimensions.naturalHeight / dimensions.naturalWidth }
+        : current);
     } catch (error) {
+      if (uploadId !== uploadRequestRef.current) return;
       setPipeline({ label: 'Image loading failed', value: 0, active: false });
       setWorkerError(error instanceof Error ? error.message : 'The image could not be loaded.');
       throw error;
     }
   };
+  const changeUnits = (units: Settings['units']) => {
+    const converted = convertSettingsUnits(settings, units);
+    setSettings(converted);
+    setStablePlacement({
+      outputWidth: converted.outputWidth,
+      outputHeight: converted.outputHeight,
+      offsetX: converted.offsetX,
+      offsetY: converted.offsetY,
+      rotationDeg: converted.rotationDeg,
+    });
+  };
   const set = (key: keyof Settings, value: unknown) => setSettings((current) => {
+    if (typeof current[key] === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) return current;
     const next = { ...current, [key]: value };
     if (current.lockAspect && image) {
       if (key === 'outputWidth') next.outputHeight = Number(value) * image.naturalHeight / image.naturalWidth;
@@ -363,7 +479,10 @@ export function App() {
     }
     return next;
   });
-  const updateTransform = (values: Partial<Settings>) => setSettings((current) => ({ ...current, ...values }));
+  const updateTransform = (values: Partial<Settings>) => {
+    if (Object.values(values).some((value) => typeof value === 'number' && !Number.isFinite(value))) return;
+    setSettings((current) => ({ ...current, ...values }));
+  };
   const queuePan = (next: { x: number; y: number }) => {
     pendingPanRef.current = next;
     if (panFrameRef.current) return;
@@ -387,6 +506,7 @@ export function App() {
     return element ? { element, width: element.width, height: element.height } : null;
   };
   const zoomPreview = (factor: number, clientX?: number, clientY?: number) => {
+    if (!validWorkArea) return;
     const target = viewportCanvas();
     if (!target) return;
     const rect = target.element.getBoundingClientRect();
@@ -397,18 +517,20 @@ export function App() {
     queueViewport(zoomAtCursor(current, cursor, factor, target, { width: settings.workWidth, height: settings.workHeight }));
   };
   const fitPreview = useCallback(() => {
+    if (!validWorkArea) return;
     const target = viewportCanvas();
     if (!target) return;
-    const next = fitViewport(stats?.bounds ?? null, target, { width: settings.workWidth, height: settings.workHeight });
+    const next = fitViewport(currentStats?.bounds ?? null, target, { width: settings.workWidth, height: settings.workHeight });
     pendingViewportRef.current = null;
     setZoom(next.zoom); setPan(next.pan);
-  }, [stats?.bounds, settings.workWidth, settings.workHeight]);
+  }, [currentStats?.bounds, settings.workWidth, settings.workHeight, validWorkArea]);
   const handlePreviewWheel = (event: React.WheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
     const delta = Math.max(-100, Math.min(100, event.deltaY));
     zoomPreview(Math.exp(-delta * .0025), event.clientX, event.clientY);
   };
   const pointerMachinePoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!validWorkArea) return null;
     const target = viewportCanvas();
     if (!target) return null;
     const rect = target.element.getBoundingClientRect();
@@ -453,39 +575,49 @@ export function App() {
     drag.current = null; placementDrag.current = null; event.currentTarget.classList.remove('is-panning', 'is-placing');
   };
   useEffect(() => {
-    if (!jobResult || !stats?.bounds || fittedJobRef.current === jobResult.id) return;
-    fittedJobRef.current = jobResult.id;
+    if (!currentJobResult || !currentStats?.bounds || fittedJobRef.current === currentJobResult.id) return;
+    fittedJobRef.current = currentJobResult.id;
     fitPreview();
-  }, [jobResult, stats?.bounds, fitPreview]);
+  }, [currentJobResult, currentStats?.bounds, fitPreview]);
   const saveGcode = (code: string) => {
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(new Blob([code], { type: 'text/plain' }));
-    link.href = url;
-    link.download = gcodeFilename(name, mode);
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    try {
+      downloadGcodeDocument(code, gcodeFilename(name, mode));
+    } catch {
+      setWorkerError('The browser could not create the G-code download.');
+    }
   };
-  const requestGcode = (action: 'inspect' | 'copy' | 'download') => {
-    if (!jobResult || placementPending) return;
-    if (gcode) {
-      if (action === 'copy') void navigator.clipboard.writeText(gcode.code);
-      if (action === 'download') saveGcode(gcode.code);
+  const requestGcode = (action: 'inspect' | 'copy' | 'download', expectedKey?: string | null) => {
+    if (!currentJobResult || !jobKey || placementPending || (expectedKey !== undefined && expectedKey !== jobKey)) return;
+    if (action !== 'inspect' && review.level === 'blocking') {
+      setWorkerError('Resolve blocking export issues before copying or downloading G-code.');
+      return;
+    }
+    if (currentGcode) {
+      if (action === 'copy') void copyGcodeDocument(currentGcode.code).catch(() => setWorkerError('The browser could not copy G-code to the clipboard.'));
+      if (action === 'download') saveGcode(currentGcode.code);
       return;
     }
     const requestId = gcodeRequestRef.current + 1;
     gcodeRequestRef.current = requestId;
-    pendingGcodeAction.current = action;
+    pendingGcodeAction.current = { action, key: jobKey };
     setGcodeState('generating');
     setPipeline({ label: 'Generating G-code…', value: 0, active: true });
-    workerRef.current?.postMessage({ type: 'serialize-gcode', id: jobResult.id, requestId });
+    try {
+      workerRef.current?.postMessage({ type: 'serialize-gcode', id: currentJobResult.id, requestId });
+    } catch {
+      pendingGcodeAction.current = null;
+      setGcodeState('error');
+      setPipeline({ label: 'G-code generation failed', value: 0, active: false });
+      setWorkerError('The G-code request could not be sent to the worker.');
+    }
   };
-  const gcodeLines = useMemo(() => gcode ? visibleGcodeLines(gcode.code, search) : null, [gcode, search]);
-  const timingTitle = timings && `Image ${timings.imageMs.toFixed(0)}ms · machine resolution ${timings.reductionMs.toFixed(0)}ms · extraction ${timings.extractionMs.toFixed(0)}ms · ordering ${timings.orderingMs.toFixed(0)}ms · movements ${timings.movementMs.toFixed(0)}ms · G-code ${timings.gcodeMs.toFixed(0)}ms · stats ${timings.statisticsMs.toFixed(0)}ms · transfer ${timings.transferMs.toFixed(0)}ms${timings.previewPreparationMs === null ? '' : ` · preview prep ${timings.previewPreparationMs.toFixed(0)}ms`}${timings.previewMs === null ? '' : ` · preview render ${timings.previewMs.toFixed(0)}ms`}`;
+  const gcodeLines = useMemo(() => currentGcode ? visibleGcodeLines(currentGcode.code, search) : null, [currentGcode, search]);
+  const timingTitle = currentTimings && `Image ${currentTimings.imageMs.toFixed(0)}ms · machine resolution ${currentTimings.reductionMs.toFixed(0)}ms · extraction ${currentTimings.extractionMs.toFixed(0)}ms · ordering ${currentTimings.orderingMs.toFixed(0)}ms · movements ${currentTimings.movementMs.toFixed(0)}ms · G-code ${currentTimings.gcodeMs.toFixed(0)}ms · stats ${currentTimings.statisticsMs.toFixed(0)}ms · transfer ${currentTimings.transferMs.toFixed(0)}ms${currentTimings.previewPreparationMs === null ? '' : ` · preview prep ${currentTimings.previewPreparationMs.toFixed(0)}ms`}${currentTimings.previewMs === null ? '' : ` · preview render ${currentTimings.previewMs.toFixed(0)}ms`}`;
 
   return <div className="app">
-    <header><div className="brand"><Settings2 size={20} /> image<span>→</span>gcode <small>LOCAL CAM</small></div><div className="toolbar"><ImageInput variant="toolbar" onFile={upload} /><button disabled={!jobResult || placementPending} title={placementPending ? 'Waiting for placement update' : undefined} onClick={() => setReviewOpen(true)}><Download size={16} /> Download G-code</button></div></header>
+    <header><div className="brand"><Settings2 size={20} /> image<span>→</span>gcode <small>LOCAL CAM</small></div><div className="toolbar"><ImageInput variant="toolbar" onFile={upload} /><button disabled={!currentJobResult || placementPending} title={placementPending ? 'Waiting for placement update' : undefined} onClick={() => { setReviewKey(jobKey); setReviewOpen(true); }}><Download size={16} /> Download G-code</button></div></header>
     <main className="layout">
-      <aside className="sidebar"><h2>Job setup</h2><label>Conversion mode<select value={mode} onChange={(event) => setMode(event.target.value as ConversionMode)}><option value="raster">Raster / scanline</option><option value="contour">Contour / outline</option><option value="grayscale">Grayscale engraving</option></select></label><label>Machine profile<select value={profileId} onChange={(event) => setProfileId(event.target.value)}>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="minor" onClick={() => { const custom = { ...profile, id: crypto.randomUUID(), name: `Custom ${profile.name}` }; setProfiles((current) => { const next = [...current, custom]; localStorage.setItem('i2g-profiles', JSON.stringify(next.filter((item) => !['cnc', 'pen', 'laser'].includes(item.id)))); return next; }); setProfileId(custom.id); }}>Duplicate profile</button>{image && <PlacementControls settings={settings} aspectRatio={image.naturalWidth / image.naturalHeight} update={updateTransform} />}<h3>Machine</h3><div className="grid"><label>Units<select value={settings.units} onChange={(event) => set('units', event.target.value as Settings['units'])}><option value="mm">Millimeters</option><option value="in">Inches</option></select></label><label>Origin<select value={settings.origin} onChange={(event) => set('origin', event.target.value as Settings['origin'])}><option value="bottom-left">Bottom left</option><option value="top-left">Top left</option><option value="center">Center</option></select></label>{machineNumKeys.map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" value={settings[key]} step={key.includes('Width') || key.includes('Height') ? 1 : 0.1} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div><label className="check"><input type="checkbox" checked={settings.invertX} onChange={(event) => set('invertX', event.target.checked)} /> Invert X</label><label className="check"><input type="checkbox" checked={settings.invertY} onChange={(event) => set('invertY', event.target.checked)} /> Invert Y</label><h3>Toolpath quality</h3><label className="detail-control" htmlFor="toolpath-detail"><span>Toolpath Detail <b>{detailLabel(settings.toolpathDetail)}</b></span><output>{settings.toolpathDetail.toFixed(2)} mm</output><input id="toolpath-detail" aria-describedby="toolpath-detail-help" type="range" min="0.1" max="1" step="0.05" value={settings.toolpathDetail} onChange={(event) => set('toolpathDetail', Number(event.target.value))} /><small id="toolpath-detail-help">Controls minimum physical detail in the generated toolpath. Higher values reduce movements, processing time, and file size.</small></label>{timings && <div className="complexity">{timings.movementCount.toLocaleString()} movements<br />{Math.round(timings.packedMovementBytes / 1024).toLocaleString()} KiB worker-packed<br />{gcode ? `${(gcode.characters / 1_000_000).toFixed(2)} MB G-code` : 'G-code generated on demand'}</div>}<label className="preview-quality"><span>Preview Quality</span><small>Canvas only — never changes G-code or statistics.</small><div role="group" aria-label="Preview Quality">{(['low', 'balanced', 'high', 'full'] as PreviewQuality[]).map((quality) => <button key={quality} type="button" className={settings.previewQuality === quality ? 'selected' : ''} aria-pressed={settings.previewQuality === quality} onClick={() => set('previewQuality', quality)}>{quality}</button>)}</div></label><h3>Image processing</h3><label>Filter<select value={settings.filter} onChange={(event) => set('filter', event.target.value as Settings['filter'])}><option value="grayscale">Grayscale</option><option value="threshold">Threshold</option><option value="edge">Edge detection</option><option value="dither">Dithering</option></select></label><div className="grid">{imageProcessNumKeys.map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" value={settings[key]} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div><label className="check"><input type="checkbox" checked={settings.invert} onChange={(event) => set('invert', event.target.checked)} /> Invert image</label><label className="check"><input type="checkbox" checked={settings.serpentine} onChange={(event) => set('serpentine', event.target.checked)} /> Serpentine scan</label></aside>
+      <aside className="sidebar"><h2>Job setup</h2><label>Conversion mode<select value={mode} onChange={(event) => setMode(event.target.value as ConversionMode)}><option value="raster">Raster / scanline</option><option value="contour">Contour / outline</option><option value="grayscale">Grayscale engraving</option></select></label><label>Machine profile<select value={profileId} onChange={(event) => setProfileId(event.target.value)}>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="minor" onClick={() => { const custom = { ...profile, id: crypto.randomUUID(), name: `Custom ${profile.name}` }; setProfiles((current) => { const next = [...current, custom]; writeLocalSetting('i2g-profiles', JSON.stringify(next.filter((item) => !['cnc', 'pen', 'laser'].includes(item.id)))); return next; }); setProfileId(custom.id); }}>Duplicate profile</button>{image && <PlacementControls settings={settings} aspectRatio={image.naturalWidth / image.naturalHeight} update={updateTransform} />}<h3>Machine</h3><div className="grid"><label>Units<select value={settings.units} onChange={(event) => changeUnits(event.target.value as Settings['units'])}><option value="mm">Millimeters</option><option value="in">Inches</option></select></label><label>Origin<select value={settings.origin} onChange={(event) => set('origin', event.target.value as Settings['origin'])}><option value="bottom-left">Bottom left</option><option value="top-left">Top left</option><option value="center">Center</option></select></label>{machineNumKeys.map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" value={settings[key]} step={key.includes('Width') || key.includes('Height') ? 1 : 0.1} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div><label className="check"><input type="checkbox" checked={settings.invertX} onChange={(event) => set('invertX', event.target.checked)} /> Invert X</label><label className="check"><input type="checkbox" checked={settings.invertY} onChange={(event) => set('invertY', event.target.checked)} /> Invert Y</label><h3>Toolpath quality</h3><label className="detail-control" htmlFor="toolpath-detail"><span>Toolpath Detail <b>{detailLabel(settings.toolpathDetail)}</b></span><output>{settings.toolpathDetail.toFixed(2)} mm</output><input id="toolpath-detail" aria-describedby="toolpath-detail-help" type="range" min="0.1" max="1" step="0.05" value={settings.toolpathDetail} onChange={(event) => set('toolpathDetail', Number(event.target.value))} /><small id="toolpath-detail-help">Controls minimum physical detail in the generated toolpath. Higher values reduce movements, processing time, and file size.</small></label>{currentTimings && <div className="complexity">{currentTimings.movementCount.toLocaleString()} movements<br />{Math.round(currentTimings.packedMovementBytes / 1024).toLocaleString()} KiB worker-packed<br />{currentGcode ? `${(currentGcode.characters / 1_000_000).toFixed(2)} MB G-code` : 'G-code generated on demand'}</div>}<label className="preview-quality"><span>Preview Quality</span><small>Canvas only — never changes G-code or statistics.</small><div role="group" aria-label="Preview Quality">{(['low', 'balanced', 'high', 'full'] as PreviewQuality[]).map((quality) => <button key={quality} type="button" className={settings.previewQuality === quality ? 'selected' : ''} aria-pressed={settings.previewQuality === quality} onClick={() => set('previewQuality', quality)}>{quality}</button>)}</div></label><h3>Image processing</h3><label>Filter<select value={settings.filter} onChange={(event) => set('filter', event.target.value as Settings['filter'])}><option value="grayscale">Grayscale</option><option value="threshold">Threshold</option><option value="edge">Edge detection</option><option value="dither">Dithering</option></select></label><div className="grid">{imageProcessNumKeys.map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" value={settings[key]} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div><label className="check"><input type="checkbox" checked={settings.invert} onChange={(event) => set('invert', event.target.checked)} /> Invert image</label><label className="check"><input type="checkbox" checked={settings.serpentine} onChange={(event) => set('serpentine', event.target.checked)} /> Serpentine scan</label></aside>
       <section className="workspace">
         <div className="workspace-head">
           <div>{name ? <><b>{name}</b> · {image?.naturalWidth} × {image?.naturalHeight}px · {(image!.naturalWidth / image!.naturalHeight).toFixed(2)}:1</> : 'No image loaded — import a file or drop it below'}</div>
@@ -497,19 +629,19 @@ export function App() {
             <button type="button" title="Fit toolpath to preview" aria-label="Fit toolpath to preview" onClick={fitPreview}><RotateCcw size={16} /></button>
           </div>
         </div>
-        <div className="job-progress" title={timingTitle || undefined}><div className="progress-copy"><span>{pipeline.label}</span><b>{Math.round(pipeline.value * 100)}%</b></div><div className="progress-track"><progress aria-label="Toolpath processing progress" max="1" value={pipeline.value} /></div>{timings && <small>{timings.movementCount.toLocaleString()} moves · {Math.round(timings.packedMovementBytes / 1024).toLocaleString()} KiB packed · worker {(timings.totalMs / 1000).toFixed(2)} s{timings.previewMs === null ? '' : ` · preview ${(timings.previewMs / 1000).toFixed(2)} s`}</small>}</div>
+        <div className="job-progress" title={timingTitle || undefined}><div className="progress-copy"><span>{pipeline.label}</span><b>{Math.round(pipeline.value * 100)}%</b></div><div className="progress-track"><progress aria-label="Toolpath processing progress" max="1" value={pipeline.value} /></div>{currentTimings && <small>{currentTimings.movementCount.toLocaleString()} moves · {Math.round(currentTimings.packedMovementBytes / 1024).toLocaleString()} KiB packed · worker {(currentTimings.totalMs / 1000).toFixed(2)} s{currentTimings.previewMs === null ? '' : ` · preview ${(currentTimings.previewMs / 1000).toFixed(2)} s`}</small>}</div>
         <div className="canvas-wrap"><ImageInput variant="dropzone" onFile={upload}>{image ? <div className="toolpath-canvases" onClick={(event) => event.stopPropagation()}>
           <canvas ref={canvas} width="1100" height="700" tabIndex={0} role="img" aria-label={editPlacement ? 'Image placement editor. Drag the image to move it or drag a corner handle to resize it. Scroll to zoom.' : 'Interactive toolpath preview. Scroll to zoom, drag to pan, double-click to fit.'} onWheel={handlePreviewWheel} onDoubleClick={fitPreview} onPointerDown={startPreviewPointer} onPointerMove={movePreviewPointer} onPointerUp={endPreviewPointer} onPointerCancel={endPreviewPointer} />
           <canvas ref={playbackCanvas} className="playback-canvas" width="1100" height="700" />
-          <div className="preview-status"><span>{Math.round(zoom * 100)}%</span><span>{settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}</span>{timings?.previewSegments ? <span>{timings.previewSegments.toLocaleString()} segments</span> : null}</div>
+          <div className="preview-status"><span>{Math.round(zoom * 100)}%</span><span>{settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}</span>{currentTimings?.previewSegments ? <span>{currentTimings.previewSegments.toLocaleString()} segments</span> : null}</div>
           <div className="preview-hint">{editPlacement ? 'Drag to move · Drag corners to resize · Scroll to zoom' : 'Scroll to zoom · Drag to pan · Double-click to fit'}</div>
         </div> : <div className="preview-empty"><b>Toolpath preview</b><span>Upload an image to generate a preview.</span></div>}</ImageInput></div>
-        <div className="playback"><button aria-label={playing ? 'Pause toolpath playback' : 'Play toolpath playback'} disabled={!previewMoves} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause /> : <Play />}</button><input aria-label="Toolpath playback" type="range" min="0" max="1" step=".001" value={playbackProgress} onChange={(event) => setPlaybackProgress(Number(event.target.value))} /><button aria-label="Restart toolpath playback" disabled={!previewMoves} onClick={() => setPlaybackProgress(0)}><RotateCcw /></button><span>{Math.round(playbackProgress * 100)}%</span></div>
+        <div className="playback"><button aria-label={playing ? 'Pause toolpath playback' : 'Play toolpath playback'} disabled={!currentPreviewMoves} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause /> : <Play />}</button><input aria-label="Toolpath playback" type="range" min="0" max="1" step=".001" value={playbackProgress} onChange={(event) => setPlaybackProgress(Number(event.target.value))} /><button aria-label="Restart toolpath playback" disabled={!currentPreviewMoves} onClick={() => setPlaybackProgress(0)}><RotateCcw /></button><span>{Math.round(playbackProgress * 100)}%</span></div>
       </section>
-      <aside className="code"><div className="code-head"><h2>G-code inspector</h2><button disabled={!jobResult || placementPending || gcodeState === 'generating'} onClick={() => requestGcode('copy')}><Copy size={15} /> {gcodeState === 'generating' ? 'Generating…' : 'Copy'}</button></div>{gcode ? <><input placeholder="Search G-code" value={search} onChange={(event) => setSearch(event.target.value)} /><p className="code-limit">{search ? 'Showing 200 lines from the match' : `Showing first ${Math.min(2_000, gcode.lines).toLocaleString()} of ${gcode.lines.toLocaleString()} lines`}</p><pre>{gcodeLines?.lines.map((line, index) => <div key={index} className={search && line.toLowerCase().includes(search.toLowerCase()) ? 'match' : ''}><i>{String((gcodeLines?.start ?? 1) + index).padStart(4, '0')}</i>{line}</div>)}</pre></> : <div className="gcode-empty"><p>{placementPending ? 'Updating image placement…' : jobResult ? 'G-code is ready to generate on demand.' : 'Import an image to prepare G-code.'}</p><button disabled={!jobResult || placementPending || gcodeState === 'generating'} onClick={() => requestGcode('inspect')}>{gcodeState === 'generating' ? 'Generating G-code…' : 'Open G-code inspector'}</button></div>}</aside>
+      <aside className="code"><div className="code-head"><h2>G-code inspector</h2><button disabled={!currentJobResult || placementPending || review.level === 'blocking' || gcodeState === 'generating'} title={review.level === 'blocking' ? 'Resolve blocking export issues before copying' : undefined} onClick={() => requestGcode('copy')}><Copy size={15} /> {gcodeState === 'generating' ? 'Generating…' : 'Copy'}</button></div>{currentGcode ? <><input placeholder="Search G-code" value={search} onChange={(event) => setSearch(event.target.value)} /><p className="code-limit">{search ? 'Showing 200 lines from the match' : `Showing first ${Math.min(2_000, currentGcode.lines).toLocaleString()} of ${currentGcode.lines.toLocaleString()} lines`}</p><pre>{gcodeLines?.lines.map((line, index) => <div key={index} className={search && line.toLowerCase().includes(search.toLowerCase()) ? 'match' : ''}><i>{String((gcodeLines?.start ?? 1) + index).padStart(4, '0')}</i>{line}</div>)}</pre></> : <div className="gcode-empty"><p>{placementPending ? 'Updating image placement…' : currentJobResult ? 'G-code is ready to generate on demand.' : 'Import an image to prepare G-code.'}</p><button disabled={!currentJobResult || placementPending || gcodeState === 'generating'} onClick={() => requestGcode('inspect')}>{gcodeState === 'generating' ? 'Generating G-code…' : 'Open G-code inspector'}</button></div>}</aside>
     </main>
-    {reviewOpen && <div className="review-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReviewOpen(false); }}><section className="export-review" role="dialog" aria-modal="true" aria-labelledby="export-review-title"><div className="review-head"><div><small>PRE-EXPORT VALIDATION</small><h2 id="export-review-title">Review G-code output</h2></div><button ref={reviewCloseButton} type="button" aria-label="Back to editing" onClick={() => setReviewOpen(false)}>×</button></div><div className={`review-status ${review.level}`}><b>{review.level === 'ready' ? 'Ready — fits within machine work area' : review.level === 'warning' ? 'Warning — inspect before exporting' : 'Blocking issue — return to edit'}</b></div><div className="review-grid"><section><h3>Machine</h3><p><b>Profile:</b> {profile.name}<br /><b>Work area:</b> {settings.workWidth} × {settings.workHeight} {settings.units}<br /><b>Origin:</b> {settings.origin.replace('-', ' ')}<br /><b>X inversion:</b> {settings.invertX ? 'On' : 'Off'} · <b>Y inversion:</b> {settings.invertY ? 'On' : 'Off'}</p>{profile.kind === 'cnc' ? <p><b>Safe Z:</b> {settings.safeZ} · <b>Working Z:</b> {settings.workZ}<br /><b>Passes:</b> {settings.passes} · <b>Feed / travel:</b> {settings.feed} / {settings.travel}</p> : <p><b>Tool on:</b> {profile.toolOn.trim() || 'Not configured'}<br /><b>Tool off:</b> {profile.toolOff.trim() || 'Not configured'}</p>}</section><section><h3>Image placement</h3><p><b>Output size:</b> {settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}<br /><b>Position:</b> X {settings.offsetX.toFixed(1)}, Y {settings.offsetY.toFixed(1)} {settings.units}<br /><b>Rotation:</b> {settings.rotationDeg}° · <b>Invert image:</b> {settings.invert ? 'On' : 'Off'}</p><h3>Toolpath</h3><p><b>Conversion:</b> {mode}<br /><b>Detail:</b> {settings.toolpathDetail.toFixed(2)} mm<br /><b>Movements:</b> {stats?.movementCount.toLocaleString() ?? '—'} · <b>Paths:</b> {timings?.pathCount.toLocaleString() ?? '—'}</p></section><section><h3>Estimated output</h3><p><b>Drawing:</b> {stats?.work.toFixed(1) ?? '—'} {settings.units}<br /><b>Travel:</b> {stats?.travel.toFixed(1) ?? '—'} {settings.units}<br /><b>Runtime:</b> {stats ? `≈ ${stats.time.toFixed(1)} min` : '—'}<br /><b>G-code size:</b> {gcode ? `${(gcode.characters / 1_000_000).toFixed(2)} MB` : 'Generated on confirmation'}</p></section></div>{review.messages.length > 0 && <div className="review-messages">{review.messages.map((message) => <p key={message}><AlertTriangle size={14} />{message}</p>)}</div>}<div className="review-actions"><button type="button" onClick={() => setReviewOpen(false)}>Back to edit</button><button type="button" className="export-confirm" disabled={review.level === 'blocking' || gcodeState === 'generating'} onClick={() => { setReviewOpen(false); requestGcode('download'); }}>{gcodeState === 'generating' ? 'Generating G-code…' : review.level === 'warning' ? 'Export anyway' : 'Export G-code'}</button></div></section></div>}
-    <footer>{complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey && <div className="warning complexity-warning"><AlertTriangle size={15} />This setting estimates {complexity.movements.toLocaleString()} movements and may use significant memory. Recommended: ≥ {complexity.recommendedDetail.toFixed(2)} mm.<button onClick={() => setApprovedExtremeKey(complexityKey)}>Process anyway</button></div>}{workerError && <div className="warning"><AlertTriangle size={15} />{workerError}</div>}{jobResult?.warnings.map((warning) => <div className="warning" key={warning}><AlertTriangle size={15} />{warning}</div>)}{stats && jobResult && <div className="stats"><span>{stats.movementCount} commands</span><span>{stats.working} working / {stats.travels} travel moves</span><span>{stats.work.toFixed(1)} mm work</span><span>{stats.travel.toFixed(1)} mm travel</span><span>≈ {stats.time.toFixed(1)} min</span><span>X {stats.bounds?.minX.toFixed(1)}–{stats.bounds?.maxX.toFixed(1)} · Y {stats.bounds?.minY.toFixed(1)}–{stats.bounds?.maxY.toFixed(1)}</span></div>}<div className="safety"><AlertTriangle size={14} /> Always inspect G-code and verify your machine configuration. Previewing does not guarantee safe operation.<span className="footer-license">© 2026 William Xu · <a href="https://github.com/wxu2206/image-to-gcode/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a> · <a href="https://github.com/wxu2206/image-to-gcode" target="_blank" rel="noopener noreferrer">GitHub</a></span></div></footer>
+    {reviewOpen && <div className="review-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReviewOpen(false); }}><section className="export-review" role="dialog" aria-modal="true" aria-labelledby="export-review-title"><div className="review-head"><div><small>PRE-EXPORT VALIDATION</small><h2 id="export-review-title">Review G-code output</h2></div><button ref={reviewCloseButton} type="button" aria-label="Back to editing" onClick={() => setReviewOpen(false)}>×</button></div><div className={`review-status ${review.level}`}><b>{review.level === 'ready' ? 'Ready — fits within machine work area' : review.level === 'warning' ? 'Warning — inspect before exporting' : 'Blocking issue — return to edit'}</b></div><div className="review-grid"><section><h3>Machine</h3><p><b>Profile:</b> {profile.name}<br /><b>Work area:</b> {settings.workWidth} × {settings.workHeight} {settings.units}<br /><b>Origin:</b> {settings.origin.replace('-', ' ')}<br /><b>X inversion:</b> {settings.invertX ? 'On' : 'Off'} · <b>Y inversion:</b> {settings.invertY ? 'On' : 'Off'}</p>{profile.kind === 'cnc' ? <p><b>Safe Z:</b> {settings.safeZ} · <b>Working Z:</b> {settings.workZ}<br /><b>Passes:</b> {settings.passes} · <b>Feed / travel:</b> {settings.feed} / {settings.travel}</p> : <p><b>Tool on:</b> {profile.toolOn.trim() || 'Not configured'}<br /><b>Tool off:</b> {profile.toolOff.trim() || 'Not configured'}</p>}</section><section><h3>Image placement</h3><p><b>Output size:</b> {settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}<br /><b>Position:</b> X {settings.offsetX.toFixed(1)}, Y {settings.offsetY.toFixed(1)} {settings.units}<br /><b>Rotation:</b> {settings.rotationDeg}° · <b>Invert image:</b> {settings.invert ? 'On' : 'Off'}</p><h3>Toolpath</h3><p><b>Conversion:</b> {mode}<br /><b>Detail:</b> {settings.toolpathDetail.toFixed(2)} mm<br /><b>Movements:</b> {currentStats?.movementCount.toLocaleString() ?? '—'} · <b>Paths:</b> {currentTimings?.pathCount.toLocaleString() ?? '—'}</p></section><section><h3>Estimated output</h3><p><b>Drawing:</b> {currentStats?.work.toFixed(1) ?? '—'} {settings.units}<br /><b>Travel:</b> {currentStats?.travel.toFixed(1) ?? '—'} {settings.units}<br /><b>Runtime:</b> {currentStats ? `≈ ${currentStats.time.toFixed(1)} min` : '—'}<br /><b>G-code size:</b> {currentGcode ? `${(currentGcode.characters / 1_000_000).toFixed(2)} MB` : 'Generated on confirmation'}</p></section></div>{review.messages.length > 0 && <div className="review-messages">{review.messages.map((message) => <p key={message}><AlertTriangle size={14} />{message}</p>)}</div>}<div className="review-actions"><button type="button" onClick={() => setReviewOpen(false)}>Back to edit</button><button type="button" className="export-confirm" disabled={review.level === 'blocking' || gcodeState === 'generating'} onClick={() => { const approvedKey = reviewKey; setReviewOpen(false); requestGcode('download', approvedKey); }}>{gcodeState === 'generating' ? 'Generating G-code…' : review.level === 'warning' ? 'Export anyway' : 'Export G-code'}</button></div></section></div>}
+    <footer>{complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey && <div className="warning complexity-warning"><AlertTriangle size={15} />This setting estimates {complexity.movements.toLocaleString()} movements and may use significant memory. Recommended: ≥ {complexity.recommendedDetail.toFixed(2)} mm.<button onClick={() => setApprovedExtremeKey(complexityKey)}>Process anyway</button></div>}{workerError && <div className="warning"><AlertTriangle size={15} />{workerError}</div>}{currentJobResult?.warnings.map((warning) => <div className="warning" key={warning}><AlertTriangle size={15} />{warning}</div>)}{currentStats && currentJobResult && <div className="stats"><span>{currentStats.movementCount} movements</span><span>{currentStats.working} working / {currentStats.travels} travel moves</span><span>{currentStats.work.toFixed(1)} {settings.units} work</span><span>{currentStats.travel.toFixed(1)} {settings.units} travel</span><span>≈ {currentStats.time.toFixed(1)} min</span><span>X {currentStats.bounds?.minX.toFixed(1)}–{currentStats.bounds?.maxX.toFixed(1)} · Y {currentStats.bounds?.minY.toFixed(1)}–{currentStats.bounds?.maxY.toFixed(1)}</span></div>}<div className="safety"><AlertTriangle size={14} /> Always inspect G-code and verify your machine configuration. Previewing does not guarantee safe operation.<span className="footer-license">© 2026 William Xu · <a href="https://github.com/wxu2206/image-to-gcode/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a> · <a href="https://github.com/wxu2206/image-to-gcode" target="_blank" rel="noopener noreferrer">GitHub</a></span></div></footer>
   </div>;
 }
 

@@ -1,21 +1,22 @@
 /// <reference lib="webworker" />
 
-import { convert, type ConversionSettings } from '../core/conversion';
+import { convert } from '../core/conversion';
 import { resampleForToolpath } from '../core/detail';
 import { buildMovements, generate, statistics, type ToolpathStats } from '../core/gcode';
 import { processImage } from '../core/image';
+import { configurationErrors, profileErrors } from '../core/machine';
 import type { ConversionMode, MachineProfile, PreviewQuality, Settings, Toolpath } from '../core/types';
 import { packedMoveBytes, packMoves, previewFromPacked, type PackedMoves } from './packedMoves';
 import { overallProgress, stageLabel, type WorkerProgressMessage, type WorkerStage, type WorkerTimings } from './progress';
 
-type RunJobRequest = { type: 'run'; id: number; pixels: { width: number; height: number; data: ArrayBuffer }; imageSettings: { brightness: number; contrast: number; invert: boolean; filter: string; threshold: number }; conversionSettings: ConversionSettings; settings: Settings; profile: MachineProfile; mode: ConversionMode };
+type RunJobRequest = { type: 'run'; id: number; pixels: { width: number; height: number; data: ArrayBuffer }; settings: Settings; profile: MachineProfile; mode: ConversionMode };
 type PreviewJobRequest = { type: 'prepare-preview'; id: number; requestId: number; quality: PreviewQuality };
 type SerializeRequest = { type: 'serialize-gcode'; id: number; requestId: number };
 type JobRequest = RunJobRequest | PreviewJobRequest | SerializeRequest;
 type JobResult = { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number };
 type PreviewResult = { type: 'preview-result'; id: number; requestId: number; moves: ReturnType<typeof previewFromPacked>; segments: number; previewMs: number };
 type GcodeResult = { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number };
-type JobError = { type: 'error'; id: number; message: string };
+type JobError = { type: 'error'; id: number; stage: 'run' | 'preview' | 'serialize'; requestId?: number; message: string };
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 let completed: { id: number; toolpath: Toolpath; settings: Settings; profile: MachineProfile; packed: PackedMoves } | null = null;
 
@@ -35,18 +36,26 @@ function reporter(id: number, requestId?: number) {
 }
 
 function countLines(code: string): number {
-  let count = code ? 1 : 0;
+  if (!code) return 0;
+  let count = 1;
   for (let index = 0; index < code.length; index += 1) if (code.charCodeAt(index) === 10) count += 1;
-  return count;
+  return code.endsWith('\n') ? count - 1 : count;
 }
 
 function run(job: RunJobRequest) {
+  completed = null;
   const started = performance.now();
   const report = reporter(job.id);
   try {
+    const errors = [...configurationErrors(job.settings, job.profile.kind), ...profileErrors(job.profile)];
+    if (errors.length) throw new Error(errors[0]);
     report('image', 0, 1);
     const imageStart = performance.now();
-    const image = processImage({ width: job.pixels.width, height: job.pixels.height, data: new Uint8ClampedArray(job.pixels.data) }, job.imageSettings, (done, total) => report('image', done, total));
+    const image = processImage(
+      { width: job.pixels.width, height: job.pixels.height, data: new Uint8ClampedArray(job.pixels.data) },
+      { brightness: job.settings.brightness, contrast: job.settings.contrast, invert: job.settings.invert, filter: job.settings.filter, threshold: job.settings.threshold },
+      (done, total) => report('image', done, total),
+    );
     const imageMs = performance.now() - imageStart;
     const reductionStart = performance.now();
     const machineImage = resampleForToolpath(image, job.settings, (done, total) => report('reduce', done, total));
@@ -55,7 +64,7 @@ function run(job: RunJobRequest) {
     let orderingMs = 0;
     const extractionStarted = performance.now();
     let orderingStarted = 0;
-    const toolpath = convert(machineImage, job.conversionSettings, job.mode, (stage, done, total) => {
+    const toolpath = convert(machineImage, job.settings, job.mode, (stage, done, total) => {
       if (stage === 'order' && orderingStarted === 0) { extractionMs = performance.now() - extractionStarted; orderingStarted = performance.now(); }
       report(stage, done, total);
     });
@@ -80,17 +89,21 @@ function run(job: RunJobRequest) {
     completed = { id: job.id, toolpath, settings: job.settings, profile: job.profile, packed };
     worker.postMessage({ type: 'result', id: job.id, warnings: built.warnings, stats, timings: { imageMs, reductionMs, extractionMs, orderingMs, movementMs, gcodeMs: 0, statisticsMs, totalMs: performance.now() - started, pathCount: toolpath.paths.length, pointCount, movementCount, gcodeCharacters: 0, packedMovementBytes: packedBytes, transferBytes: 0 }, sentAt: performance.timeOrigin + performance.now() } satisfies JobResult);
   } catch (error) {
-    worker.postMessage({ type: 'error', id: job.id, message: error instanceof Error ? error.message : 'Toolpath processing failed.' } satisfies JobError);
+    worker.postMessage({ type: 'error', id: job.id, stage: 'run', message: error instanceof Error ? error.message : 'Toolpath processing failed.' } satisfies JobError);
   }
 }
 
 function preparePreview(job: PreviewJobRequest) {
   if (!completed || completed.id !== job.id) return;
-  const report = reporter(job.id, job.requestId);
-  const started = performance.now();
-  const moves = previewFromPacked(completed.packed, job.quality, (done, total) => report('preview', done, total));
-  report('preview', 1, 1);
-  worker.postMessage({ type: 'preview-result', id: job.id, requestId: job.requestId, moves, segments: moves.length, previewMs: performance.now() - started } satisfies PreviewResult);
+  try {
+    const report = reporter(job.id, job.requestId);
+    const started = performance.now();
+    const moves = previewFromPacked(completed.packed, job.quality, (done, total) => report('preview', done, total));
+    report('preview', 1, 1);
+    worker.postMessage({ type: 'preview-result', id: job.id, requestId: job.requestId, moves, segments: moves.length, previewMs: performance.now() - started } satisfies PreviewResult);
+  } catch (error) {
+    worker.postMessage({ type: 'error', id: job.id, stage: 'preview', requestId: job.requestId, message: error instanceof Error ? error.message : 'Preview preparation failed.' } satisfies JobError);
+  }
 }
 
 function serializeGcode(job: SerializeRequest) {
@@ -101,7 +114,7 @@ function serializeGcode(job: SerializeRequest) {
     report('serialize', 1, 1);
     worker.postMessage({ type: 'gcode-result', id: job.id, requestId: job.requestId, code: generated.code, characters: generated.code.length, lines: countLines(generated.code) } satisfies GcodeResult);
   } catch (error) {
-    worker.postMessage({ type: 'error', id: job.id, message: error instanceof Error ? error.message : 'G-code serialization failed.' } satisfies JobError);
+    worker.postMessage({ type: 'error', id: job.id, stage: 'serialize', requestId: job.requestId, message: error instanceof Error ? error.message : 'G-code serialization failed.' } satisfies JobError);
   }
 }
 

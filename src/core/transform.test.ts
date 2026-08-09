@@ -23,4 +23,17 @@ describe('image placement transform', () => {
     expect(fitBounds.minY).toBeGreaterThanOrEqual(0);
     expect(fitBounds.maxY).toBeLessThanOrEqual(200);
   });
+  it('fits extreme aspect ratios across arbitrary positive and negative rotations', () => {
+    for (const aspectRatio of [0.05, 0.2, 1, 5, 20]) {
+      for (const rotationDeg of [-179, -91, -33, 17, 89, 143]) {
+        const source = { ...settings, rotationDeg };
+        const fitted = { ...source, ...fitTransformToWorkArea(source, aspectRatio) };
+        const bounds = transformedBounds(fitted);
+        expect(bounds.minX).toBeGreaterThanOrEqual(-1e-10);
+        expect(bounds.minY).toBeGreaterThanOrEqual(-1e-10);
+        expect(bounds.maxX).toBeLessThanOrEqual(source.workWidth + 1e-10);
+        expect(bounds.maxY).toBeLessThanOrEqual(source.workHeight + 1e-10);
+      }
+    }
+  });
 });

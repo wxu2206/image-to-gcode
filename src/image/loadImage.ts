@@ -39,7 +39,9 @@ export function readImagePixels(image: HTMLImageElement, maximumDimension = 900)
   const width = image.naturalWidth || image.width;
   const height = image.naturalHeight || image.height;
   if (!width || !height) throw new Error('The image has invalid pixel dimensions.');
-  if (width * height > MAX_SOURCE_PIXELS) throw new Error('This image has too many pixels to process safely. Resize it below 48 megapixels and try again.');
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0 || width > MAX_SOURCE_PIXELS / height) {
+    throw new Error('This image has too many pixels to process safely. Resize it below 48 megapixels and try again.');
+  }
   const scale = Math.min(1, maximumDimension / Math.max(width, height));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(width * scale));

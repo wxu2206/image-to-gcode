@@ -11,4 +11,10 @@ describe('complexity guardrails', () => {
   it('does not treat normal jobs as a browser-safety confirmation case', () => {
     expect(estimateComplexity({ width: 900, height: 900 }, { ...defaults, toolpathDetail: 1 }, 'raster').level).toBe('normal');
   });
+  it('accounts for multi-pass movement multiplication', () => {
+    const single = estimateComplexity({ width: 500, height: 500 }, { ...defaults, outputWidth: 100, outputHeight: 100, toolpathDetail: .5, passes: 1 }, 'raster');
+    const repeated = estimateComplexity({ width: 500, height: 500 }, { ...defaults, outputWidth: 100, outputHeight: 100, toolpathDetail: .5, passes: 8 }, 'raster');
+    expect(repeated.movements).toBe(single.movements * 8);
+    expect(repeated.level).toBe('extreme');
+  });
 });
