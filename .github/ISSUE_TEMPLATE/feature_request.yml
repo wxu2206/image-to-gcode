@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest an improvement to image-to-gcode
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: Thank you for suggesting an improvement. Search existing issues first and focus on the problem the feature would solve.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find the same request.
+          required: true
+        - label: This request relates to image-to-gcode rather than general machine support.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or limitation
+      description: What is difficult, missing, slow, or unclear today?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed improvement
+      description: Describe what you would like to happen. A complete technical design is not required.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Image processing
+        - Toolpath generation
+        - G-code output
+        - Preview and playback
+        - Machine profiles and settings
+        - Performance
+        - Accessibility or interface
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workaround or alternative you have tried. It is acceptable to write "None."
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Examples or additional context
+      description: Add sanitized mockups, examples, measurements, or links that clarify the request.
