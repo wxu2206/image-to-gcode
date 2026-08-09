@@ -1,7 +1,6 @@
-# THIS IS CURRENTLY BROKEN DO NOT USE
-
-
 # image-to-gcode
+
+> **Beta:** The main features are working, but bugs, incomplete areas, and performance issues should still be expected.
 
 A browser-based image-to-G-code utility for CNC routers, pen plotters, and generic XY laser-style machines. Images remain local to the browser; there is no account or backend.
 
@@ -38,8 +37,8 @@ Profiles intentionally do not assume spindle, laser, servo, or homing commands. 
 
 ## Limitations and roadmap
 
-Contour extraction is intentionally lightweight pixel-boundary tracing; future work could add connected contour following, SVG import/export, image-processing workers, rotary support, and richer machine post-processors.
+Contour extraction is intentionally lightweight pixel-boundary tracing; future work could add connected contour following, SVG import/export, rotary support, and richer machine post-processors. Performance and secondary features are still being improved during beta.
 
 ## Contributing
 
-Please keep conversion geometry, machine transformation, and G-code serialization separate, add deterministic tests for behavioral changes, and run all checks before opening a pull request.
+Bug reports, feature requests, and code contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the beginner-friendly workflow, development checks, and pull request guidance.
