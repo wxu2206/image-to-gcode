@@ -1,5 +1,5 @@
 import type { GcodeResult, MachineProfile, Move, Point, Settings, Toolpath } from './types';
-import { distance, machinePoint, scaleToOutput } from './geometry';
+import { distance } from './geometry';
 import { validate } from './machine';
 
 export type ToolpathStats = {
@@ -10,35 +10,52 @@ export type ToolpathStats = {
 const format = (value: number, precision: number) => value.toFixed(precision).replace(/\.?0+$/, '');
 const coordinates = (point: Point, settings: Settings) =>
   `X${format(point.x, settings.precision)} Y${format(point.y, settings.precision)}${point.z === undefined ? '' : ` Z${format(point.z, settings.precision)}`}`;
+export type GenerationStage = 'movements' | 'gcode';
+export type GenerationProgress = (stage: GenerationStage, completed: number, total: number) => void;
 
 function isSamePoint(a: Point, b: Point) {
   return a.x === b.x && a.y === b.y && a.z === b.z;
 }
 
-export function generate(toolpath: Toolpath, settings: Settings, profile: MachineProfile): GcodeResult {
-  const warnings = validate(settings);
-  const lines = [
+export function generate(toolpath: Toolpath, settings: Settings, profile: MachineProfile, onProgress?: GenerationProgress): GcodeResult {
+  const warningSet = new Set(validate(settings));
+  const program: Array<string | Move> = [
     '; image-to-gcode — inspect before running',
     `; mode: ${toolpath.mode}`,
     settings.units === 'mm' ? 'G21' : 'G20',
     'G90',
   ];
-  for (const line of profile.header.trim().split('\n')) if (line) lines.push(line);
+  for (const line of profile.header.trim().split('\n')) if (line) program.push(line);
   const moves: Move[] = [];
   let current: Point = profile.kind === 'cnc' ? { x: 0, y: 0, z: settings.safeZ } : { x: 0, y: 0 };
-  const mapped = (point: Point) => machinePoint(scaleToOutput(point, toolpath.width, toolpath.height, settings), settings);
+  const xScale = settings.outputWidth / toolpath.width;
+  const yScale = settings.outputHeight / toolpath.height;
+  const mapped = (source: Point): Point => {
+    let x = source.x * xScale;
+    let y = source.y * yScale;
+    if (settings.origin === 'center') { x -= settings.outputWidth / 2; y -= settings.outputHeight / 2; }
+    else if (settings.origin === 'top-left') y = settings.outputHeight - y;
+    if (settings.invertX) x = settings.outputWidth - x;
+    if (settings.invertY) y = settings.outputHeight - y;
+    return { x: x + settings.offsetX, y: y + settings.offsetY, z: source.z };
+  };
+  let pointTotal = 0;
+  for (const path of toolpath.paths) pointTotal += Math.max(0, path.points.length - 1) * settings.passes;
+  let pointDone = 0;
 
   const addMove = (command: Move['command'], target: Point, working: boolean, feed: number, pathId?: string) => {
     if (isSamePoint(current, target)) return;
-    lines.push(`${command} ${coordinates(target, settings)} F${format(feed, settings.precision)}`);
-    moves.push({ command, from: current, to: target, working, feed, pathId });
+    const move = { command, from: current, to: target, working, feed, pathId } as Move;
+    moves.push(move);
+    program.push(move);
     current = target;
   };
   const liftToSafeZ = (pathId?: string) => {
     if (current.z === settings.safeZ) return;
     const target = { ...current, z: settings.safeZ };
-    lines.push(`G0 Z${format(settings.safeZ, settings.precision)}`);
-    moves.push({ command: 'G0', from: current, to: target, working: false, feed: settings.travel, pathId });
+    const move: Move = { command: 'G0', from: current, to: target, working: false, feed: settings.travel, pathId, zOnly: true };
+    moves.push(move);
+    program.push(move);
     current = target;
   };
 
@@ -46,13 +63,13 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
     if (path.points.length < 2) continue;
     const start = mapped(path.points[0]);
     if (start.x < 0 || start.y < 0 || start.x > settings.workWidth || start.y > settings.workHeight) {
-      warnings.push(`Path ${path.id} begins outside work area.`);
+      warningSet.add(`Path ${path.id} begins outside work area.`);
     }
 
     for (let pass = 0; pass < settings.passes; pass += 1) {
       if (profile.kind === 'cnc') liftToSafeZ(path.id);
       addMove('G0', { ...start, z: profile.kind === 'cnc' ? settings.safeZ : current.z }, false, settings.travel, path.id);
-      if (profile.toolOn.trim()) lines.push(profile.toolOn);
+      if (profile.toolOn.trim()) program.push(profile.toolOn);
 
       const depth = Math.max(settings.maxDepth, settings.workZ - pass * profile.passDepth);
       if (profile.kind === 'cnc') addMove('G1', { ...start, z: depth }, true, settings.feed, path.id);
@@ -61,20 +78,34 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
         const target = mapped(path.points[pointIndex]);
         if (profile.kind === 'cnc') target.z = depth;
         if (target.x < 0 || target.y < 0 || target.x > settings.workWidth || target.y > settings.workHeight) {
-          warnings.push(`Path ${path.id} extends outside work area.`);
+          warningSet.add(`Path ${path.id} extends outside work area.`);
         }
         addMove('G1', target, true, settings.feed, path.id);
+        pointDone += 1;
+        if (pointDone % 4096 === 0) onProgress?.('movements', pointDone, pointTotal);
       }
-      if (profile.toolOff.trim()) lines.push(profile.toolOff);
+      if (profile.toolOff.trim()) program.push(profile.toolOff);
     }
   }
 
   if (profile.kind === 'cnc') liftToSafeZ();
+  onProgress?.('movements', pointTotal, pointTotal);
+  const lines = new Array<string>(program.length);
+  for (let index = 0; index < program.length; index += 1) {
+    const instruction = program[index];
+    lines[index] = typeof instruction === 'string'
+      ? instruction
+      : instruction.zOnly
+        ? `G0 Z${format(instruction.to.z ?? settings.safeZ, settings.precision)}`
+        : `${instruction.command} ${coordinates(instruction.to, settings)} F${format(instruction.feed ?? settings.feed, settings.precision)}`;
+    if (index % 4096 === 0) onProgress?.('gcode', index, program.length);
+  }
   for (const line of profile.footer.trim().split('\n')) if (line) lines.push(line);
-  return { code: `${lines.join('\n')}\n`, moves, warnings: [...new Set(warnings)] };
+  onProgress?.('gcode', program.length, program.length);
+  return { code: `${lines.join('\n')}\n`, moves, warnings: [...warningSet] };
 }
 
-export function statistics(moves: Move[]): ToolpathStats {
+export function statistics(moves: Move[], onProgress?: (completed: number, total: number) => void): ToolpathStats {
   let work = 0;
   let travel = 0;
   let working = 0;
@@ -104,7 +135,8 @@ export function statistics(moves: Move[]): ToolpathStats {
     }
   };
 
-  for (const move of moves) {
+  for (let index = 0; index < moves.length; index += 1) {
+    const move = moves[index];
     includePoint(move.from);
     includePoint(move.to);
     const moveDistance = distance(move.from, move.to);
@@ -117,7 +149,9 @@ export function statistics(moves: Move[]): ToolpathStats {
       travels += 1;
     }
     if (Number.isFinite(move.feed) && move.feed !== undefined && move.feed > 0) time += validDistance / move.feed * 60;
+    if (index % 4096 === 0) onProgress?.(index, moves.length);
   }
+  onProgress?.(moves.length, moves.length);
   return {
     work,
     travel,

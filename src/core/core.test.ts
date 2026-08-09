@@ -97,6 +97,15 @@ describe('G-code generation', () => {
     const summary = statistics(result.moves);
     expect(summary.working).toBe(1); expect(summary.travels).toBe(1); expect(summary.total).toBeGreaterThan(summary.work); expect(summary.bounds?.maxX).toBe(100);
   });
+  it('reports bounded generation and statistics progress from real loop work', () => {
+    const stages: string[] = [];
+    const result = generate(singlePath([{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 10 }]), settings, profiles[1], (stage, completed, total) => stages.push(`${stage}:${completed}/${total}`));
+    const progress: string[] = [];
+    statistics(result.moves, (completed, total) => progress.push(`${completed}/${total}`));
+    expect(stages.some((value) => value.startsWith('movements:'))).toBe(true);
+    expect(stages.some((value) => value.startsWith('gcode:'))).toBe(true);
+    expect(progress[progress.length - 1]).toBe(`${result.moves.length}/${result.moves.length}`);
+  });
   it('uses one-pass statistics for very large movement collections', () => {
     const count = 150_000;
     const moves: Move[] = [];

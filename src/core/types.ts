@@ -6,5 +6,5 @@ export type Origin = 'bottom-left' | 'top-left' | 'center';
 export type Units = 'mm' | 'in';
 export type MachineProfile = { id: string; name: string; kind: 'cnc'|'pen'|'laser'; header: string; footer: string; toolOn: string; toolOff: string; safeZ: number; workZ: number; passDepth: number; feed: number; travel: number };
 export type Settings = { units: Units; workWidth:number; workHeight:number; outputWidth:number; outputHeight:number; lockAspect:boolean; offsetX:number; offsetY:number; origin:Origin; invertX:boolean; invertY:boolean; feed:number; travel:number; safeZ:number; workZ:number; maxDepth:number; passes:number; lineSpacing:number; precision:number; threshold:number; serpentine:boolean; simplify:number; brightness:number; contrast:number; invert:boolean; filter:'grayscale'|'threshold'|'edge'|'dither'; fit:boolean };
-export type Move = { command:'G0'|'G1'; from:Point; to:Point; working:boolean; feed?:number; pathId?:string };
+export type Move = { command:'G0'|'G1'; from:Point; to:Point; working:boolean; feed?:number; pathId?:string; zOnly?:boolean };
 export type GcodeResult = { code:string; moves:Move[]; warnings:string[] };

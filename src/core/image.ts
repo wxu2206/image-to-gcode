@@ -1,3 +1,63 @@
-export type PixelData={width:number;height:number;data:Uint8ClampedArray};
-export type GrayImage=PixelData;
-export function processImage(input:PixelData, opt:{brightness:number;contrast:number;invert:boolean;filter:string;threshold:number}):GrayImage {const d=new Uint8ClampedArray(input.width*input.height);for(let i=0;i<d.length;i++){const p=i*4;let v=.2126*input.data[p]+.7152*input.data[p+1]+.0722*input.data[p+2];v=(v-128)*(1+opt.contrast/100)+128+opt.brightness;if(opt.invert)v=255-v;d[i]=Math.max(0,Math.min(255,v))}if(opt.filter==='edge'){const out=new Uint8ClampedArray(d.length);for(let y=1;y<input.height-1;y++)for(let x=1;x<input.width-1;x++){const i=y*input.width+x;out[i]=Math.min(255,Math.abs(d[i-1]-d[i+1])+Math.abs(d[i-input.width]-d[i+input.width]))}return{width:input.width,height:input.height,data:out}}if(opt.filter==='threshold')for(let i=0;i<d.length;i++)d[i]=d[i]<opt.threshold?0:255;if(opt.filter==='dither')for(let y=0;y<input.height;y++)for(let x=0;x<input.width;x++){const i=y*input.width+x,old=d[i],next=old<128?0:255,e=old-next;d[i]=next;if(x+1<input.width)d[i+1]+=e*7/16;if(y+1<input.height)d[i+input.width+1]+=e/16;if(y+1<input.height)d[i+input.width]+=e*5/16;if(x&&y+1<input.height)d[i+input.width-1]+=e*3/16}return{width:input.width,height:input.height,data:d};}
+export type PixelData = { width: number; height: number; data: Uint8ClampedArray };
+export type GrayImage = PixelData;
+export type ImageProgress = (completed: number, total: number) => void;
+
+const reportEvery = 16_384;
+
+/** Converts decoded RGBA pixels without allocating intermediary colour images. */
+export function processImage(
+  input: PixelData,
+  opt: { brightness: number; contrast: number; invert: boolean; filter: string; threshold: number },
+  onProgress?: ImageProgress,
+): GrayImage {
+  const pixels = input.width * input.height;
+  const data = new Uint8ClampedArray(pixels);
+  const totalWork = opt.filter === 'grayscale' ? pixels : pixels * 2;
+  const report = (completed: number) => onProgress?.(completed, totalWork);
+
+  for (let index = 0; index < pixels; index += 1) {
+    const source = index * 4;
+    let value = 0.2126 * input.data[source] + 0.7152 * input.data[source + 1] + 0.0722 * input.data[source + 2];
+    value = (value - 128) * (1 + opt.contrast / 100) + 128 + opt.brightness;
+    if (opt.invert) value = 255 - value;
+    data[index] = Math.max(0, Math.min(255, value));
+    if (index % reportEvery === 0) report(index);
+  }
+
+  if (opt.filter === 'edge') {
+    const output = new Uint8ClampedArray(pixels);
+    for (let y = 1; y < input.height - 1; y += 1) {
+      for (let x = 1; x < input.width - 1; x += 1) {
+        const index = y * input.width + x;
+        output[index] = Math.min(255, Math.abs(data[index - 1] - data[index + 1]) + Math.abs(data[index - input.width] - data[index + input.width]));
+      }
+      if (y % 16 === 0) report(pixels + y * input.width);
+    }
+    report(totalWork);
+    return { width: input.width, height: input.height, data: output };
+  }
+  if (opt.filter === 'threshold') {
+    for (let index = 0; index < pixels; index += 1) {
+      data[index] = data[index] < opt.threshold ? 0 : 255;
+      if (index % reportEvery === 0) report(pixels + index);
+    }
+  }
+  if (opt.filter === 'dither') {
+    for (let y = 0; y < input.height; y += 1) {
+      for (let x = 0; x < input.width; x += 1) {
+        const index = y * input.width + x;
+        const old = data[index];
+        const next = old < 128 ? 0 : 255;
+        const error = old - next;
+        data[index] = next;
+        if (x + 1 < input.width) data[index + 1] += error * 7 / 16;
+        if (y + 1 < input.height) data[index + input.width + 1] += error / 16;
+        if (y + 1 < input.height) data[index + input.width] += error * 5 / 16;
+        if (x && y + 1 < input.height) data[index + input.width - 1] += error * 3 / 16;
+      }
+      if (y % 16 === 0) report(pixels + y * input.width);
+    }
+  }
+  report(totalWork);
+  return { width: input.width, height: input.height, data };
+}

@@ -3,16 +3,18 @@ import type { ConversionMode, Path, Point, Settings, Toolpath } from './types';
 import { distance, simplify } from './geometry';
 
 const point = (x: number, y: number): Point => ({ x, y });
-const pointKey = (value: Point) => `${value.x},${value.y}`;
 export type ConversionSettings = Pick<Settings, 'lineSpacing' | 'outputHeight' | 'threshold' | 'serpentine' | 'simplify'>;
+export type ConversionStage = 'extract' | 'order';
+export type ConversionProgress = (stage: ConversionStage, completed: number, total: number) => void;
 
 /**
  * Deterministic spatial sweep for independent paths. The previous nearest-neighbor
  * scan was O(n²) and dominated noisy contour jobs. Row buckets retain locality in
  * O(n log n), and open paths may still reverse to reduce the immediately preceding travel.
  */
-export function orderPaths(paths: Path[]): Path[] {
+export function orderPaths(paths: Path[], onProgress?: ConversionProgress): Path[] {
   const rowSize = 32;
+  onProgress?.('order', 0, paths.length);
   const ordered = [...paths].sort((a, b) => {
     const aStart = a.points[0];
     const bStart = b.points[0];
@@ -23,25 +25,31 @@ export function orderPaths(paths: Path[]): Path[] {
     return direction * (aStart.x - bStart.x) || a.id.localeCompare(b.id);
   });
   let cursor = point(0, 0);
-  return ordered.map((path) => {
+  const result: Path[] = new Array(ordered.length);
+  for (let index = 0; index < ordered.length; index += 1) {
+    const path = ordered[index];
     const first = path.points[0];
     const last = path.points[path.points.length - 1];
     const closed = first.x === last.x && first.y === last.y;
     if (!closed && distance(cursor, last) < distance(cursor, first)) {
       const points = [...path.points].reverse();
       cursor = points[points.length - 1];
-      return { ...path, points };
+      result[index] = { ...path, points };
+    } else {
+      cursor = last;
+      result[index] = path;
     }
-    cursor = last;
-    return path;
-  });
+    if (index % 1024 === 0) onProgress?.('order', index, ordered.length);
+  }
+  onProgress?.('order', ordered.length, ordered.length);
+  return result;
 }
 
-export function raster(image: GrayImage, settings: ConversionSettings, mode: ConversionMode = 'raster'): Toolpath {
+export function raster(image: GrayImage, settings: ConversionSettings, mode: ConversionMode = 'raster', onProgress?: ConversionProgress): Toolpath {
   const paths: Path[] = [];
   const step = Math.max(1, Math.round(settings.lineSpacing / settings.outputHeight * image.height));
   let id = 0;
-  for (let y = 0; y < image.height; y += step) {
+  for (let y = 0, line = 0; y < image.height; y += step, line += 1) {
     let run: Point[] = [];
     for (let x = 0; x < image.width; x += 1) {
       const intensity = image.data[y * image.width + x];
@@ -52,72 +60,90 @@ export function raster(image: GrayImage, settings: ConversionSettings, mode: Con
       } else run = [];
     }
     if (run.length > 1) paths.push({ id: `r${id++}`, points: run, kind: 'work', intensity: 255 - image.data[y * image.width] });
+    if (line % 16 === 0) onProgress?.('extract', y, image.height);
   }
+  onProgress?.('extract', image.height, image.height);
+  onProgress?.('order', 0, paths.length);
   const ordered = settings.serpentine
-    ? paths.map((path, index) => index % 2 ? { ...path, points: [...path.points].reverse() } : path)
+    ? paths.map((path, index) => {
+      if (index % 1024 === 0) onProgress?.('order', index, paths.length);
+      return index % 2 ? { ...path, points: [...path.points].reverse() } : path;
+    })
     : paths;
+  onProgress?.('order', paths.length, paths.length);
   return { paths: ordered, width: image.width, height: image.height, mode };
 }
-
-type Edge = { from: Point; to: Point };
 
 /**
  * Traces binary-pixel boundaries as connected loops. Pixels contribute only their
  * exposed cell edges; joining matching edge endpoints produces actual contour geometry.
+ * Integer vertex keys avoid hundreds of thousands of short-lived Point objects and
+ * string keys on dense images. At junctions we choose the same top-to-bottom,
+ * left-to-right edge ordering as the original implementation.
  */
-export function contour(image: GrayImage, settings: ConversionSettings): Toolpath {
-  const isDark = (x: number, y: number) => x >= 0 && y >= 0 && x < image.width && y < image.height
-    && image.data[y * image.width + x] < settings.threshold;
-  const outgoing = new Map<string, Edge[]>();
-  const addEdge = (from: Point, to: Point) => {
-    const edge = { from, to };
-    const edges = outgoing.get(pointKey(from)) ?? [];
-    edges.push(edge);
-    outgoing.set(pointKey(from), edges);
+export function contour(image: GrayImage, settings: ConversionSettings, onProgress?: ConversionProgress): Toolpath {
+  const stride = image.width + 1;
+  const outgoing = new Map<number, number[]>();
+  let edgeCount = 0;
+  const vertex = (x: number, y: number) => y * stride + x;
+  const addEdge = (from: number, to: number) => {
+    const edges = outgoing.get(from);
+    if (edges) edges.push(to);
+    else outgoing.set(from, [to]);
+    edgeCount += 1;
   };
 
   for (let y = 0; y < image.height; y += 1) {
     for (let x = 0; x < image.width; x += 1) {
-      if (!isDark(x, y)) continue;
-      if (!isDark(x, y - 1)) addEdge(point(x, y), point(x + 1, y));
-      if (!isDark(x + 1, y)) addEdge(point(x + 1, y), point(x + 1, y + 1));
-      if (!isDark(x, y + 1)) addEdge(point(x + 1, y + 1), point(x, y + 1));
-      if (!isDark(x - 1, y)) addEdge(point(x, y + 1), point(x, y));
+      const index = y * image.width + x;
+      if (image.data[index] >= settings.threshold) continue;
+      if (y === 0 || image.data[index - image.width] >= settings.threshold) addEdge(vertex(x, y), vertex(x + 1, y));
+      if (x === image.width - 1 || image.data[index + 1] >= settings.threshold) addEdge(vertex(x + 1, y), vertex(x + 1, y + 1));
+      if (y === image.height - 1 || image.data[index + image.width] >= settings.threshold) addEdge(vertex(x + 1, y + 1), vertex(x, y + 1));
+      if (x === 0 || image.data[index - 1] >= settings.threshold) addEdge(vertex(x, y + 1), vertex(x, y));
     }
+    if (y % 8 === 0) onProgress?.('extract', y, image.height * 2);
   }
 
-  const takeNext = (from: Point): Edge | undefined => {
-    const edges = outgoing.get(pointKey(from));
+  const takeNext = (from: number): number | undefined => {
+    const edges = outgoing.get(from);
     if (!edges?.length) return undefined;
-    edges.sort((a, b) => a.to.y - b.to.y || a.to.x - b.to.x);
-    const edge = edges.shift();
-    if (!edges.length) outgoing.delete(pointKey(from));
-    return edge;
+    let nextIndex = 0;
+    for (let index = 1; index < edges.length; index += 1) if (edges[index] < edges[nextIndex]) nextIndex = index;
+    const next = edges[nextIndex];
+    edges[nextIndex] = edges[edges.length - 1];
+    edges.pop();
+    if (!edges.length) outgoing.delete(from);
+    return next;
   };
   const paths: Path[] = [];
   let id = 0;
+  let traced = 0;
   while (outgoing.size) {
-    const startKey = outgoing.keys().next().value;
-    if (startKey === undefined) break;
-    const [startX, startY] = startKey.split(',').map(Number);
-    const first = takeNext(point(startX, startY));
-    if (!first) continue;
-    const loop = [first.from, first.to];
-    while (pointKey(loop[loop.length - 1]) !== pointKey(loop[0])) {
+    const start = outgoing.keys().next().value as number | undefined;
+    if (start === undefined) break;
+    const first = takeNext(start);
+    if (first === undefined) continue;
+    const loop = [start, first];
+    traced += 1;
+    while (loop[loop.length - 1] !== loop[0]) {
       const next = takeNext(loop[loop.length - 1]);
-      if (!next) break;
-      loop.push(next.to);
+      if (next === undefined) break;
+      loop.push(next);
+      traced += 1;
+      if (traced % 2048 === 0) onProgress?.('extract', image.height + traced, image.height + edgeCount);
     }
-    if (loop.length > 3 && pointKey(loop[0]) === pointKey(loop[loop.length - 1])) {
-      const openLoop = loop.slice(0, -1);
+    if (loop.length > 3 && loop[0] === loop[loop.length - 1]) {
+      const openLoop = loop.slice(0, -1).map((key) => point(key % stride, Math.floor(key / stride)));
       const reduced = simplify(openLoop, Math.max(0.1, settings.simplify));
       const simplifiedPoints = reduced.length >= 3 ? reduced : openLoop;
       const closed = [...simplifiedPoints, simplifiedPoints[0]];
       if (closed.length > 3) paths.push({ id: `c${id++}`, points: closed, kind: 'work' });
     }
   }
-  return { paths: orderPaths(paths), width: image.width, height: image.height, mode: 'contour' };
+  onProgress?.('extract', image.height + edgeCount, image.height + edgeCount);
+  return { paths: orderPaths(paths, onProgress), width: image.width, height: image.height, mode: 'contour' };
 }
 
-export const convert = (image: GrayImage, settings: ConversionSettings, mode: ConversionMode) =>
-  mode === 'contour' ? contour(image, settings) : raster(image, settings, mode);
+export const convert = (image: GrayImage, settings: ConversionSettings, mode: ConversionMode, onProgress?: ConversionProgress) =>
+  mode === 'contour' ? contour(image, settings, onProgress) : raster(image, settings, mode, onProgress);
