@@ -85,6 +85,11 @@ describe('G-code generation', () => {
     const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), settings, profile);
     expect(result.code).toContain('G21'); expect(result.code).toContain('G17'); expect(result.code).toContain('M3'); expect(result.code).toContain('M5'); expect(result.code).toContain('G0 Z5'); expect(result.code).toContain('F600');
   });
+  it('keeps custom machine commands as literal G-code text', () => {
+    const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), settings, { ...profiles[1], header: '<script>alert(1)</script>', toolOn: '<b>ON</b>' });
+    expect(result.code).toContain('<script>alert(1)</script>');
+    expect(result.code).toContain('<b>ON</b>');
+  });
   it('maps offsets, origin, and inversion identically in moves and G-code', () => {
     const result = generate(singlePath([{ x: 0, y: 0 }, { x: 10, y: 10 }]), { ...settings, offsetX: 2, offsetY: 3, invertX: true }, profiles[1]);
     expect(result.moves.find((move) => !move.working)?.to).toMatchObject({ x: 102, y: 53 });

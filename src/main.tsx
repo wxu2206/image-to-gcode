@@ -14,6 +14,7 @@ import { centerTransform, fitTransformToWorkArea, normalizeRotation } from './co
 import { transformedBounds } from './core/transform';
 import { machinePoint } from './core/geometry';
 import { buildExportReview } from './core/exportReview';
+import { gcodeFilename } from './utils/filename';
 import './style.css';
 
 const machineNumKeys = ['workWidth', 'workHeight', 'feed', 'travel', 'safeZ', 'workZ', 'maxDepth', 'passes', 'lineSpacing', 'precision'] as const;
@@ -37,6 +38,12 @@ type WorkerMessage =
   | { type: 'preview-result'; id: number; requestId: number; moves: Move[]; segments: number; previewMs: number }
   | { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number }
   | { type: 'error'; id: number; message: string };
+
+const workerMessage = (value: unknown): value is WorkerMessage => {
+  if (typeof value !== 'object' || value === null) return false;
+  const message = value as { type?: unknown; id?: unknown };
+  return typeof message.type === 'string' && ['progress', 'result', 'preview-result', 'gcode-result', 'error'].includes(message.type) && typeof message.id === 'number' && Number.isFinite(message.id);
+};
 
 function PlacementControls({ settings, aspectRatio, update }: { settings: Settings; aspectRatio: number; update: (values: Partial<Settings>) => void }) {
   const resize = (key: 'outputWidth' | 'outputHeight', value: number) => {
@@ -154,7 +161,8 @@ export function App() {
     setWorkerError(null);
 
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const message = event.data;
+      const message: unknown = event.data;
+      if (!workerMessage(message)) return;
       if (message.id !== jobRef.current) return;
       if (message.type === 'progress') {
         if (message.stage === 'preview' && !isCurrentPreviewRequest(previewRequestRef.current, message.requestId)) return;
@@ -183,8 +191,8 @@ export function App() {
         if (action === 'download') {
           const link = document.createElement('a');
           const url = URL.createObjectURL(new Blob([next.code], { type: 'text/plain' }));
-          link.href = url; link.download = `${nameRef.current.replace(/\.[^.]+$/, '') || 'image'}-${mode}.gcode`; link.click();
-          setTimeout(() => URL.revokeObjectURL(url), 0);
+          link.href = url; link.download = gcodeFilename(nameRef.current, mode); link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1_000);
         }
       } else if (message.type === 'error') {
         setWorkerError(message.message);
@@ -453,9 +461,9 @@ export function App() {
     const link = document.createElement('a');
     const url = URL.createObjectURL(new Blob([code], { type: 'text/plain' }));
     link.href = url;
-    link.download = `${name.replace(/\.[^.]+$/, '') || 'image'}-${mode}.gcode`;
+    link.download = gcodeFilename(name, mode);
     link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
   };
   const requestGcode = (action: 'inspect' | 'copy' | 'download') => {
     if (!jobResult || placementPending) return;
@@ -489,7 +497,7 @@ export function App() {
             <button type="button" title="Fit toolpath to preview" aria-label="Fit toolpath to preview" onClick={fitPreview}><RotateCcw size={16} /></button>
           </div>
         </div>
-        <div className="job-progress" title={timingTitle || undefined}><div className="progress-copy"><span>{pipeline.label}</span><b>{Math.round(pipeline.value * 100)}%</b></div><div className="progress-track" role="progressbar" aria-label="Toolpath processing progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pipeline.value * 100)}><span style={{ width: `${pipeline.value * 100}%` }} /></div>{timings && <small>{timings.movementCount.toLocaleString()} moves · {Math.round(timings.packedMovementBytes / 1024).toLocaleString()} KiB packed · worker {(timings.totalMs / 1000).toFixed(2)} s{timings.previewMs === null ? '' : ` · preview ${(timings.previewMs / 1000).toFixed(2)} s`}</small>}</div>
+        <div className="job-progress" title={timingTitle || undefined}><div className="progress-copy"><span>{pipeline.label}</span><b>{Math.round(pipeline.value * 100)}%</b></div><div className="progress-track"><progress aria-label="Toolpath processing progress" max="1" value={pipeline.value} /></div>{timings && <small>{timings.movementCount.toLocaleString()} moves · {Math.round(timings.packedMovementBytes / 1024).toLocaleString()} KiB packed · worker {(timings.totalMs / 1000).toFixed(2)} s{timings.previewMs === null ? '' : ` · preview ${(timings.previewMs / 1000).toFixed(2)} s`}</small>}</div>
         <div className="canvas-wrap"><ImageInput variant="dropzone" onFile={upload}>{image ? <div className="toolpath-canvases" onClick={(event) => event.stopPropagation()}>
           <canvas ref={canvas} width="1100" height="700" tabIndex={0} role="img" aria-label={editPlacement ? 'Image placement editor. Drag the image to move it or drag a corner handle to resize it. Scroll to zoom.' : 'Interactive toolpath preview. Scroll to zoom, drag to pan, double-click to fit.'} onWheel={handlePreviewWheel} onDoubleClick={fitPreview} onPointerDown={startPreviewPointer} onPointerMove={movePreviewPointer} onPointerUp={endPreviewPointer} onPointerCancel={endPreviewPointer} />
           <canvas ref={playbackCanvas} className="playback-canvas" width="1100" height="700" />

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { contour, raster } from './conversion';
 import { detailResolution, resampleForToolpath } from './detail';
-import { defaults, loadSettings } from './machine';
+import { defaults, loadProfiles, loadSettings } from './machine';
 
 const settings = { ...defaults, outputWidth: 100, outputHeight: 50, lineSpacing: .5, threshold: 128, simplify: .1 };
 const darkImage = (width: number, height: number) => ({ width, height, data: new Uint8ClampedArray(width * height) });
@@ -11,6 +11,14 @@ describe('physical toolpath detail', () => {
     localStorage.setItem('i2g-settings', JSON.stringify({ outputWidth: 220 }));
     expect(loadSettings()).toMatchObject({ outputWidth: 220, toolpathDetail: .3, previewQuality: 'balanced' });
     localStorage.removeItem('i2g-settings');
+  });
+  it('reconstructs known settings fields from malformed local storage without inheriting junk', () => {
+    localStorage.setItem('i2g-settings', JSON.stringify({ outputWidth: 'wide', feed: Infinity, invert: 'yes', units: 'nope', __proto__: { polluted: true } }));
+    expect(loadSettings()).toMatchObject({ outputWidth: defaults.outputWidth, feed: defaults.feed, invert: defaults.invert, units: defaults.units });
+    localStorage.setItem('i2g-profiles', JSON.stringify([{ id: 'bad', name: 7 }, { id: 'custom', name: 'Safe', kind: 'pen', header: '<script>', footer: '', toolOn: '', toolOff: '', safeZ: 0, workZ: 0, passDepth: 1, feed: 100, travel: 200 }]));
+    expect(loadProfiles().map((profile) => profile.id)).toContain('custom');
+    expect(loadProfiles().map((profile) => profile.id)).not.toContain('bad');
+    localStorage.removeItem('i2g-settings'); localStorage.removeItem('i2g-profiles');
   });
   it('derives useful samples from output millimetres without changing requested dimensions', () => {
     const source = darkImage(1000, 500);

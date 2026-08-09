@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { convert } from '../core/conversion';
 import { processImage } from '../core/image';
 import { defaults } from '../core/machine';
-import { decodeImageFile, isSupportedImageFile, readImagePixels } from './loadImage';
+import { decodeImageFile, isSupportedImageFile, readImagePixels, validateImageFile } from './loadImage';
 
 const OriginalFileReader = globalThis.FileReader;
 const OriginalImage = globalThis.Image;
@@ -19,6 +19,12 @@ describe('image loading pipeline', () => {
     expect(isSupportedImageFile({ name: 'photo.jpeg', type: 'image/jpeg' })).toBe(true);
     expect(isSupportedImageFile({ name: 'image.webp', type: 'image/webp' })).toBe(true);
     expect(isSupportedImageFile({ name: 'fake.png', type: 'text/plain' })).toBe(false);
+  });
+
+  it('rejects an otherwise supported file with an unsafe resource size', () => {
+    const oversized = new File(['image'], 'large.png', { type: 'image/png' });
+    Object.defineProperty(oversized, 'size', { value: 41 * 1024 * 1024 });
+    expect(() => validateImageFile(oversized)).toThrow('smaller than 40 MB');
   });
 
   it('decodes pixels and produces usable conversion geometry', async () => {
