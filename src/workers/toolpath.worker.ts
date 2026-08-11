@@ -6,7 +6,7 @@ import { buildMovements, generate, statistics, type ToolpathStats } from '../cor
 import { processImage } from '../core/image';
 import { configurationErrors, profileErrors } from '../core/machine';
 import type { ConversionMode, MachineProfile, PreviewQuality, Settings, Toolpath } from '../core/types';
-import { packedMoveBytes, packMoves, previewFromPacked, type PackedMoves } from './packedMoves';
+import { packedMoveBytes, packMoves, timedPreviewFromPacked, type PackedMoves } from './packedMoves';
 import { overallProgress, stageLabel, type WorkerProgressMessage, type WorkerStage, type WorkerTimings } from './progress';
 
 type RunJobRequest = { type: 'run'; id: number; pixels: { width: number; height: number; data: ArrayBuffer }; settings: Settings; profile: MachineProfile; mode: ConversionMode };
@@ -15,7 +15,7 @@ type SerializeRequest = { type: 'serialize-gcode'; id: number; requestId: number
 type JobRequest = RunJobRequest | PreviewJobRequest | SerializeRequest;
 type JobResult = { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number };
 type ProcessedPreviewResult = { type: 'processed-preview-result'; id: number; preview: { width: number; height: number; data: ArrayBuffer } };
-type PreviewResult = { type: 'preview-result'; id: number; requestId: number; moves: ReturnType<typeof previewFromPacked>; segments: number; previewMs: number };
+type PreviewResult = { type: 'preview-result'; id: number; requestId: number; moves: ReturnType<typeof timedPreviewFromPacked>['moves']; timing: { endMinutes: ArrayBuffer; totalMinutes: number }; segments: number; previewMs: number };
 type GcodeResult = { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number };
 type JobError = { type: 'error'; id: number; stage: 'run' | 'preview' | 'serialize'; requestId?: number; message: string };
 const worker = self as unknown as DedicatedWorkerGlobalScope;
@@ -109,9 +109,10 @@ function preparePreview(job: PreviewJobRequest) {
   try {
     const report = reporter(job.id, job.requestId);
     const started = performance.now();
-    const moves = previewFromPacked(completed.packed, job.quality, (done, total) => report('preview', done, total));
+    const preview = timedPreviewFromPacked(completed.packed, job.quality, (done, total) => report('preview', done, total));
     report('preview', 1, 1);
-    worker.postMessage({ type: 'preview-result', id: job.id, requestId: job.requestId, moves, segments: moves.length, previewMs: performance.now() - started } satisfies PreviewResult);
+    const timingBuffer = preview.endMinutes.buffer as ArrayBuffer;
+    worker.postMessage({ type: 'preview-result', id: job.id, requestId: job.requestId, moves: preview.moves, timing: { endMinutes: timingBuffer, totalMinutes: preview.totalMinutes }, segments: preview.moves.length, previewMs: performance.now() - started } satisfies PreviewResult, [timingBuffer]);
   } catch (error) {
     worker.postMessage({ type: 'error', id: job.id, stage: 'preview', requestId: job.requestId, message: error instanceof Error ? error.message : 'Preview preparation failed.' } satisfies JobError);
   }

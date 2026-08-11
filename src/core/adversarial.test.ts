@@ -196,6 +196,17 @@ describe('machine-control state sequencing', () => {
   it('estimates duration in minutes from units-per-minute feeds', () => {
     const summary = statistics([{ command: 'G1', from: { x: 0, y: 0 }, to: { x: 60, y: 0 }, working: true, feed: 60 }]);
     expect(summary.time).toBe(1);
+    expect(summary.estimate).toEqual({ totalMinutes: 1, workMinutes: 1, travelMinutes: 0 });
+  });
+
+  it('separates working and travel time while retaining CNC Z travel in the estimate', () => {
+    const summary = statistics([
+      { command: 'G0', from: { x: 0, y: 0, z: 0 }, to: { x: 0, y: 0, z: 12 }, working: false, feed: 600, zOnly: true },
+      { command: 'G1', from: { x: 0, y: 0, z: 12 }, to: { x: 30, y: 0, z: 12 }, working: true, feed: 300 },
+    ]);
+    expect(summary.estimate.workMinutes).toBeCloseTo(0.1);
+    expect(summary.estimate.travelMinutes).toBeCloseTo(0.02);
+    expect(summary.estimate.totalMinutes).toBeCloseTo(0.12);
   });
 
   it('handles empty, single zero-length, and Z-less statistics without invented extrema', () => {
