@@ -19,6 +19,8 @@ import { canonicalJobKey, isCurrentJobRevision, isCurrentRevision } from './core
 import { convertSettingsUnits } from './core/units';
 import { gcodeFilename } from './utils/filename';
 import { isWorkerMessage, type WorkerMessage } from './workers/messages';
+import { advancePlaybackMinutes, playbackPosition } from './visualization/playback';
+import { formatEstimatedDuration, formatPlaybackClock } from './utils/duration';
 import './style.css';
 
 const machineNumKeys = ['workWidth', 'workHeight', 'feed', 'travel', 'safeZ', 'workZ', 'maxDepth', 'passes', 'lineSpacing', 'precision'] as const;
@@ -59,6 +61,7 @@ type JobSummary = { id: number; key: string; warnings: string[] };
 type LoadedGcode = { jobId: number; key: string; code: string; characters: number; lines: number };
 type LoadedImage = { naturalWidth: number; naturalHeight: number };
 type RasterPreview = { width: number; height: number; data: Uint8ClampedArray; grayscale: boolean };
+type PreviewTiming = { jobId: number; key: string; endMinutes: Float64Array; totalMinutes: number };
 
 function PlacementControls({ settings, aspectRatio, update }: { settings: Settings; aspectRatio: number; update: (values: Partial<Settings>) => void }) {
   const resize = (key: 'outputWidth' | 'outputHeight', value: number) => {
@@ -86,6 +89,7 @@ export function App() {
   const [name, setName] = useState('');
   const [jobResult, setJobResult] = useState<JobSummary | null>(null);
   const [previewMoves, setPreviewMoves] = useState<Move[] | null>(null);
+  const [previewTiming, setPreviewTiming] = useState<PreviewTiming | null>(null);
   const [processedPreview, setProcessedPreview] = useState<ProcessedPreview | null>(null);
   const [previewMode, setPreviewMode] = useState<PreviewMode>('toolpath');
   const [showTravel, setShowTravel] = useState(true);
@@ -104,7 +108,8 @@ export function App() {
   const [reviewKey, setReviewKey] = useState<string | null>(null);
   const [stablePlacement, setStablePlacement] = useState(() => ({ outputWidth: settings.outputWidth, outputHeight: settings.outputHeight, offsetX: settings.offsetX, offsetY: settings.offsetY, rotationDeg: settings.rotationDeg }));
   const [playing, setPlaying] = useState(false);
-  const [playbackProgress, setPlaybackProgress] = useState(0);
+  const [playbackMinutes, setPlaybackMinutes] = useState(0);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [search, setSearch] = useState('');
   const canvas = useRef<HTMLCanvasElement>(null);
   const playbackCanvas = useRef<HTMLCanvasElement>(null);
@@ -128,6 +133,10 @@ export function App() {
   const fittedJobRef = useRef<number | null>(null);
   const drag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const placementDrag = useRef<{ action: 'move' | 'resize'; x: number; y: number; offsetX: number; offsetY: number; width: number; height: number; centerX: number; centerY: number } | null>(null);
+  const playbackFrameRef = useRef(0);
+  const playbackMinuteRef = useRef(0);
+  const playbackDrawRef = useRef<(minutes: number) => void>(() => {});
+  const playbackUiUpdateRef = useRef(0);
 
   useEffect(() => writeLocalSetting('i2g-settings', JSON.stringify(settings)), [settings]);
   useEffect(() => writeLocalSetting('i2g-profile', profileId), [profileId]);
@@ -135,6 +144,7 @@ export function App() {
   useEffect(() => () => workerRef.current?.terminate(), []);
   useEffect(() => () => cancelAnimationFrame(panFrameRef.current), []);
   useEffect(() => () => cancelAnimationFrame(viewportFrameRef.current), []);
+  useEffect(() => () => cancelAnimationFrame(playbackFrameRef.current), []);
   useEffect(() => {
     if (!reviewOpen) return;
     reviewCloseButton.current?.focus();
@@ -171,6 +181,9 @@ export function App() {
   const currentStats = currentJobResult ? stats : null;
   const currentTimings = currentJobResult ? timings : null;
   const currentPreviewMoves = currentJobResult ? previewMoves : null;
+  const currentPreviewTiming = currentJobResult && previewTiming?.jobId === currentJobResult.id && previewTiming.key === jobKey ? previewTiming : null;
+  const playbackTotalMinutes = currentPreviewTiming?.totalMinutes ?? 0;
+  const playbackProgress = playbackTotalMinutes > 0 ? Math.min(1, playbackMinutes / playbackTotalMinutes) : 0;
   const currentGcode = currentJobResult && isCurrentRevision(gcode?.key, jobKey) && gcode?.jobId === currentJobResult.id ? gcode : null;
   const reviewedRevisionCurrent = !reviewOpen || reviewKey === jobKey;
   const validWorkArea = Number.isFinite(settings.workWidth) && Number.isFinite(settings.workHeight) && settings.workWidth > 0 && settings.workHeight > 0;
@@ -193,12 +206,14 @@ export function App() {
     workerRef.current?.terminate();
     setJobResult(null);
     setPreviewMoves(null);
+    setPreviewTiming(null);
     setGcode(null);
     setGcodeState('idle');
     setStats(null);
     setTimings(null);
     setPlaying(false);
-    setPlaybackProgress(0);
+    playbackMinuteRef.current = 0;
+    setPlaybackMinutes(0);
     pendingGcodeAction.current = null;
     if (complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey) {
       setPipeline({ label: 'Extreme job needs confirmation', value: 0, active: false });
@@ -227,6 +242,7 @@ export function App() {
         setGcodeState('error');
         setJobResult(null);
         setPreviewMoves(null);
+        setPreviewTiming(null);
         setProcessedPreview(null);
         setStats(null);
         setTimings(null);
@@ -257,6 +273,10 @@ export function App() {
       } else if (message.type === 'preview-result') {
         if (!isCurrentPreviewRequest(previewRequestRef.current, message.requestId)) return;
         setPreviewMoves(message.moves);
+        setPreviewTiming({ jobId: message.id, key: jobKey, endMinutes: new Float64Array(message.timing.endMinutes), totalMinutes: message.timing.totalMinutes });
+        playbackMinuteRef.current = 0;
+        setPlaybackMinutes(0);
+        setPlaying(false);
         setPipeline({ label: 'Rendering preview…', value: 0.94, active: true });
         setTimings((current) => current ? { ...current, previewPreparationMs: message.previewMs, previewSegments: message.segments } : current);
       } else if (message.type === 'gcode-result') {
@@ -288,6 +308,7 @@ export function App() {
         if (message.stage === 'run') {
           setJobResult(null);
           setPreviewMoves(null);
+          setPreviewTiming(null);
           setProcessedPreview(null);
           setStats(null);
           setTimings(null);
@@ -301,6 +322,7 @@ export function App() {
         setGcodeState('error');
         setJobResult(null);
         setPreviewMoves(null);
+        setPreviewTiming(null);
         setProcessedPreview(null);
         setStats(null);
         setTimings(null);
@@ -329,6 +351,10 @@ export function App() {
     const requestId = previewRequestRef.current + 1;
     previewRequestRef.current = requestId;
     setPreviewMoves(null);
+    setPreviewTiming(null);
+    playbackMinuteRef.current = 0;
+    setPlaybackMinutes(0);
+    setPlaying(false);
     setPipeline({ label: 'Preparing preview…', value: 0.9, active: true });
     try {
       workerRef.current?.postMessage({ type: 'prepare-preview', id, requestId, quality: settings.previewQuality });
@@ -498,44 +524,61 @@ export function App() {
 
   useEffect(() => {
     const element = playbackCanvas.current;
-    if (!element || !image) return;
+    if (!element || !image) { playbackDrawRef.current = () => {}; return; }
     const context = element.getContext('2d');
-    if (!context) return;
-    context.clearRect(0, 0, element.width, element.height);
-    if (!validWorkArea || previewMode !== 'toolpath') return;
-    const moves = currentPreviewMoves;
-    if (!moves?.length) return;
-    const move = moves[Math.min(moves.length - 1, Math.floor(moves.length * playbackProgress))];
-    const scale = Math.min((element.width - 40) / settings.workWidth, (element.height - 40) / settings.workHeight) * zoom;
-    const originX = (element.width - settings.workWidth * scale) / 2 + pan.x;
-    const originY = (element.height - settings.workHeight * scale) / 2 + pan.y;
-    context.fillStyle = '#ffbd59';
-    context.beginPath();
-    context.arc(originX + move.to.x * scale, originY + (settings.workHeight - move.to.y) * scale, 4, 0, 7);
-    context.fill();
-  }, [image, currentPreviewMoves, previewMode, settings.workWidth, settings.workHeight, zoom, pan, playbackProgress, validWorkArea]);
+    if (!context) { playbackDrawRef.current = () => {}; return; }
+    const draw = (minutes: number) => {
+      context.clearRect(0, 0, element.width, element.height);
+      if (!validWorkArea || previewMode !== 'toolpath') return;
+      const moves = currentPreviewMoves;
+      const timing = currentPreviewTiming;
+      if (!moves?.length || !timing) return;
+      const position = playbackPosition(moves, timing.endMinutes, minutes);
+      if (!position) return;
+      const scale = Math.min((element.width - 40) / settings.workWidth, (element.height - 40) / settings.workHeight) * zoom;
+      const originX = (element.width - settings.workWidth * scale) / 2 + pan.x;
+      const originY = (element.height - settings.workHeight * scale) / 2 + pan.y;
+      context.fillStyle = position.working ? '#39d98a' : '#ffbd59';
+      context.beginPath();
+      context.arc(originX + position.point.x * scale, originY + (settings.workHeight - position.point.y) * scale, 4, 0, Math.PI * 2);
+      context.fill();
+    };
+    playbackDrawRef.current = draw;
+    draw(playbackMinuteRef.current);
+    return () => { playbackDrawRef.current = () => {}; };
+  }, [image, currentPreviewMoves, currentPreviewTiming, previewMode, settings.workWidth, settings.workHeight, zoom, pan, validWorkArea]);
 
   useEffect(() => {
     if (previewMode !== 'toolpath') setPlaying(false);
   }, [previewMode]);
 
   useEffect(() => {
-    if (!playing || !currentPreviewMoves || previewMode !== 'toolpath') return;
-    const timer = window.setInterval(() => setPlaybackProgress((current) => {
-      if (current >= 1) { setPlaying(false); return 1; }
-      return current + 0.01;
-    }), 100);
-    return () => window.clearInterval(timer);
-  }, [playing, currentPreviewMoves, previewMode]);
+    if (!playing || !currentPreviewTiming || !currentPreviewMoves?.length || previewMode !== 'toolpath' || playbackTotalMinutes <= 0) return;
+    const startedAt = performance.now();
+    const startedMinutes = playbackMinuteRef.current;
+    const animate = (now: number) => {
+      const next = advancePlaybackMinutes(startedMinutes, now - startedAt, playbackSpeed, playbackTotalMinutes);
+      playbackMinuteRef.current = next;
+      playbackDrawRef.current(next);
+      if (now - playbackUiUpdateRef.current >= 80 || next >= playbackTotalMinutes) {
+        playbackUiUpdateRef.current = now;
+        setPlaybackMinutes(next);
+      }
+      if (next >= playbackTotalMinutes) { setPlaying(false); return; }
+      playbackFrameRef.current = requestAnimationFrame(animate);
+    };
+    playbackFrameRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(playbackFrameRef.current);
+  }, [playing, currentPreviewMoves, currentPreviewTiming, previewMode, playbackSpeed, playbackTotalMinutes]);
 
   const upload = async (file: File) => {
     const uploadId = uploadRequestRef.current + 1;
     uploadRequestRef.current = uploadId;
     jobRef.current += 1;
     workerRef.current?.terminate();
-    setImage(null); setSourcePixels(null); setProcessedPreview(null); setJobResult(null); setPreviewMoves(null); setGcode(null); setGcodeState('idle'); setStats(null); setTimings(null);
+    setImage(null); setSourcePixels(null); setProcessedPreview(null); setJobResult(null); setPreviewMoves(null); setPreviewTiming(null); setGcode(null); setGcodeState('idle'); setStats(null); setTimings(null);
     setPipeline({ label: 'Decoding image…', value: 0, active: true });
-    setWorkerError(null); setName(''); setPlaying(false); setPlaybackProgress(0);
+    setWorkerError(null); setName(''); setPlaying(false); playbackMinuteRef.current = 0; setPlaybackMinutes(0);
     try {
       const decoded = await decodeImageFile(file);
       const pixels = readImagePixels(decoded);
@@ -738,12 +781,12 @@ export function App() {
           <div className="preview-status"><span>{previewMode}</span><span>{Math.round(zoom * 100)}%</span><span>{settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}</span>{previewMode === 'toolpath' && currentTimings?.previewSegments ? <span>{currentTimings.previewSegments.toLocaleString()} segments</span> : null}</div>
           <div className="preview-hint">{editPlacement ? 'Drag to move · Drag corners to resize · Scroll to zoom' : previewMode === 'toolpath' ? 'Scroll to zoom · Drag to pan · Double-click to fit' : 'Preview only · Scroll to zoom · Drag to pan · Double-click to fit'}</div>
         </div> : <div className="preview-empty"><b>Toolpath preview</b><span>Upload an image to generate a preview.</span></div>}</ImageInput></div>
-        <div className="playback">{previewMode === 'toolpath' && <div className="preview-overlays" role="group" aria-label="Toolpath overlays"><button type="button" className={showTravel ? 'selected' : ''} aria-pressed={showTravel} title="Show or hide tool-inactive travel moves" onClick={() => setShowTravel((value) => !value)}>Travel</button><button type="button" className={showEndpoints ? 'selected' : ''} aria-pressed={showEndpoints} title="Show or hide active-path start and end markers" onClick={() => setShowEndpoints((value) => !value)}>Start / end</button></div>}<div className="playback-controls"><button aria-label={playing ? 'Pause toolpath playback' : 'Play toolpath playback'} disabled={!currentPreviewMoves || previewMode !== 'toolpath'} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause /> : <Play />}</button><input aria-label="Toolpath playback" disabled={previewMode !== 'toolpath'} type="range" min="0" max="1" step=".001" value={playbackProgress} onChange={(event) => setPlaybackProgress(Number(event.target.value))} /><button aria-label="Restart toolpath playback" disabled={!currentPreviewMoves || previewMode !== 'toolpath'} onClick={() => setPlaybackProgress(0)}><RotateCcw /></button><span>{Math.round(playbackProgress * 100)}%</span></div></div>
+        <div className="playback">{previewMode === 'toolpath' && <div className="preview-overlays" role="group" aria-label="Toolpath overlays"><button type="button" className={showTravel ? 'selected' : ''} aria-pressed={showTravel} title="Show or hide tool-inactive travel moves" onClick={() => setShowTravel((value) => !value)}>Travel</button><button type="button" className={showEndpoints ? 'selected' : ''} aria-pressed={showEndpoints} title="Show or hide active-path start and end markers" onClick={() => setShowEndpoints((value) => !value)}>Start / end</button></div>}<div className="playback-controls"><button aria-label={playing ? 'Pause toolpath playback' : 'Play toolpath playback'} disabled={!currentPreviewTiming || previewMode !== 'toolpath'} onClick={() => setPlaying((value) => { if (!value && playbackMinuteRef.current >= playbackTotalMinutes) { playbackMinuteRef.current = 0; setPlaybackMinutes(0); playbackDrawRef.current(0); } return !value; })}>{playing ? <Pause /> : <Play />}</button><input aria-label="Toolpath playback" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} type="range" min="0" max="1" step=".001" value={playbackProgress} onChange={(event) => { const next = Number(event.target.value) * playbackTotalMinutes; setPlaying(false); playbackMinuteRef.current = next; setPlaybackMinutes(next); playbackDrawRef.current(next); }} /><button aria-label="Restart toolpath playback" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} onClick={() => { setPlaying(false); playbackMinuteRef.current = 0; setPlaybackMinutes(0); playbackDrawRef.current(0); }}><RotateCcw /></button><label className="playback-speed">Speed<select aria-label="Playback speed" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}>{[0.25, 0.5, 1, 2, 5, 10].map((speed) => <option key={speed} value={speed}>{speed}×</option>)}</select></label><span className="playback-time">{formatPlaybackClock(playbackMinutes)} / {formatPlaybackClock(playbackTotalMinutes)}</span></div></div>
       </section>
       <aside className="code"><div className="code-head"><h2>G-code inspector</h2><button disabled={!currentJobResult || placementPending || review.level === 'blocking' || gcodeState === 'generating'} title={review.level === 'blocking' ? 'Resolve blocking export issues before copying' : undefined} onClick={() => requestGcode('copy')}><Copy size={15} /> {gcodeState === 'generating' ? 'Generating…' : 'Copy'}</button></div>{currentGcode ? <><input placeholder="Search G-code" value={search} onChange={(event) => setSearch(event.target.value)} /><p className="code-limit">{search ? 'Showing 200 lines from the match' : `Showing first ${Math.min(2_000, currentGcode.lines).toLocaleString()} of ${currentGcode.lines.toLocaleString()} lines`}</p><pre>{gcodeLines?.lines.map((line, index) => <div key={index} className={search && line.toLowerCase().includes(search.toLowerCase()) ? 'match' : ''}><i>{String((gcodeLines?.start ?? 1) + index).padStart(4, '0')}</i>{line}</div>)}</pre></> : <div className="gcode-empty"><p>{placementPending ? 'Updating image placement…' : currentJobResult ? 'G-code is ready to generate on demand.' : 'Import an image to prepare G-code.'}</p><button disabled={!currentJobResult || placementPending || gcodeState === 'generating'} onClick={() => requestGcode('inspect')}>{gcodeState === 'generating' ? 'Generating G-code…' : 'Open G-code inspector'}</button></div>}</aside>
     </main>
-    {reviewOpen && <div className="review-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReviewOpen(false); }}><section className="export-review" role="dialog" aria-modal="true" aria-labelledby="export-review-title"><div className="review-head"><div><small>PRE-EXPORT VALIDATION</small><h2 id="export-review-title">Review G-code output</h2></div><button ref={reviewCloseButton} type="button" aria-label="Back to editing" onClick={() => setReviewOpen(false)}>×</button></div><div className={`review-status ${review.level}`}><b>{review.level === 'ready' ? 'Ready — fits within machine work area' : review.level === 'warning' ? 'Warning — inspect before exporting' : 'Blocking issue — return to edit'}</b></div><div className="review-grid"><section><h3>Machine</h3><p><b>Profile:</b> {profile.name}<br /><b>Work area:</b> {settings.workWidth} × {settings.workHeight} {settings.units}<br /><b>Origin:</b> {settings.origin.replace('-', ' ')}<br /><b>X inversion:</b> {settings.invertX ? 'On' : 'Off'} · <b>Y inversion:</b> {settings.invertY ? 'On' : 'Off'}</p>{profile.kind === 'cnc' ? <p><b>Safe Z:</b> {settings.safeZ} · <b>Working Z:</b> {settings.workZ}<br /><b>Passes:</b> {settings.passes} · <b>Feed / travel:</b> {settings.feed} / {settings.travel}</p> : <p><b>Tool on:</b> {profile.toolOn.trim() || 'Not configured'}<br /><b>Tool off:</b> {profile.toolOff.trim() || 'Not configured'}</p>}</section><section><h3>Image placement</h3><p><b>Output size:</b> {settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}<br /><b>Position:</b> X {settings.offsetX.toFixed(1)}, Y {settings.offsetY.toFixed(1)} {settings.units}<br /><b>Rotation:</b> {settings.rotationDeg}° · <b>Invert image:</b> {settings.invert ? 'On' : 'Off'}</p><h3>Toolpath</h3><p><b>Conversion:</b> {mode}<br /><b>Detail:</b> {settings.toolpathDetail.toFixed(2)} mm<br /><b>Movements:</b> {currentStats?.movementCount.toLocaleString() ?? '—'} · <b>Paths:</b> {currentTimings?.pathCount.toLocaleString() ?? '—'}</p></section><section><h3>Estimated output</h3><p><b>Drawing:</b> {currentStats?.work.toFixed(1) ?? '—'} {settings.units}<br /><b>Travel:</b> {currentStats?.travel.toFixed(1) ?? '—'} {settings.units}<br /><b>Runtime:</b> {currentStats ? `≈ ${currentStats.time.toFixed(1)} min` : '—'}<br /><b>G-code size:</b> {currentGcode ? `${(currentGcode.characters / 1_000_000).toFixed(2)} MB` : 'Generated on confirmation'}</p></section></div>{review.messages.length > 0 && <div className="review-messages">{review.messages.map((message) => <p key={message}><AlertTriangle size={14} />{message}</p>)}</div>}<div className="review-actions"><button type="button" onClick={() => setReviewOpen(false)}>Back to edit</button><button type="button" className="export-confirm" disabled={review.level === 'blocking' || gcodeState === 'generating'} onClick={() => { const approvedKey = reviewKey; setReviewOpen(false); requestGcode('download', approvedKey); }}>{gcodeState === 'generating' ? 'Generating G-code…' : review.level === 'warning' ? 'Export anyway' : 'Export G-code'}</button></div></section></div>}
-    <footer>{complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey && <div className="warning complexity-warning"><AlertTriangle size={15} />This setting estimates {complexity.movements.toLocaleString()} movements and may use significant memory. Recommended: ≥ {complexity.recommendedDetail.toFixed(2)} mm.<button onClick={() => setApprovedExtremeKey(complexityKey)}>Process anyway</button></div>}{workerError && <div className="warning"><AlertTriangle size={15} />{workerError}</div>}{currentJobResult?.warnings.map((warning) => <div className="warning" key={warning}><AlertTriangle size={15} />{warning}</div>)}{currentStats && currentJobResult && <div className="stats"><span>{currentStats.movementCount} movements</span><span>{currentStats.working} working / {currentStats.travels} travel moves</span><span>{currentStats.work.toFixed(1)} {settings.units} work</span><span>{currentStats.travel.toFixed(1)} {settings.units} travel</span><span>≈ {currentStats.time.toFixed(1)} min</span><span>X {currentStats.bounds?.minX.toFixed(1)}–{currentStats.bounds?.maxX.toFixed(1)} · Y {currentStats.bounds?.minY.toFixed(1)}–{currentStats.bounds?.maxY.toFixed(1)}</span></div>}<div className="safety"><AlertTriangle size={14} /> Always inspect G-code and verify your machine configuration. Previewing does not guarantee safe operation.<span className="footer-license">© 2026 William Xu · <a href="https://github.com/wxu2206/image-to-gcode/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a> · <a href="https://github.com/wxu2206/image-to-gcode" target="_blank" rel="noopener noreferrer">GitHub</a></span></div></footer>
+    {reviewOpen && <div className="review-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReviewOpen(false); }}><section className="export-review" role="dialog" aria-modal="true" aria-labelledby="export-review-title"><div className="review-head"><div><small>PRE-EXPORT VALIDATION</small><h2 id="export-review-title">Review G-code output</h2></div><button ref={reviewCloseButton} type="button" aria-label="Back to editing" onClick={() => setReviewOpen(false)}>×</button></div><div className={`review-status ${review.level}`}><b>{review.level === 'ready' ? 'Ready — fits within machine work area' : review.level === 'warning' ? 'Warning — inspect before exporting' : 'Blocking issue — return to edit'}</b></div><div className="review-grid"><section><h3>Machine</h3><p><b>Profile:</b> {profile.name}<br /><b>Work area:</b> {settings.workWidth} × {settings.workHeight} {settings.units}<br /><b>Origin:</b> {settings.origin.replace('-', ' ')}<br /><b>X inversion:</b> {settings.invertX ? 'On' : 'Off'} · <b>Y inversion:</b> {settings.invertY ? 'On' : 'Off'}</p>{profile.kind === 'cnc' ? <p><b>Safe Z:</b> {settings.safeZ} · <b>Working Z:</b> {settings.workZ}<br /><b>Passes:</b> {settings.passes} · <b>Feed / travel:</b> {settings.feed} / {settings.travel}</p> : <p><b>Tool on:</b> {profile.toolOn.trim() || 'Not configured'}<br /><b>Tool off:</b> {profile.toolOff.trim() || 'Not configured'}</p>}</section><section><h3>Image placement</h3><p><b>Output size:</b> {settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}<br /><b>Position:</b> X {settings.offsetX.toFixed(1)}, Y {settings.offsetY.toFixed(1)} {settings.units}<br /><b>Rotation:</b> {settings.rotationDeg}° · <b>Invert image:</b> {settings.invert ? 'On' : 'Off'}</p><h3>Toolpath</h3><p><b>Conversion:</b> {mode}<br /><b>Detail:</b> {settings.toolpathDetail.toFixed(2)} mm<br /><b>Movements:</b> {currentStats?.movementCount.toLocaleString() ?? '—'} · <b>Paths:</b> {currentTimings?.pathCount.toLocaleString() ?? '—'}</p></section><section><h3>Estimated output</h3><p><b>Drawing:</b> {currentStats?.work.toFixed(1) ?? '—'} {settings.units}<br /><b>Travel:</b> {currentStats?.travel.toFixed(1) ?? '—'} {settings.units}<br /><b>Runtime:</b> {currentStats ? formatEstimatedDuration(currentStats.estimate.totalMinutes) : '—'}<br /><b>G-code size:</b> {currentGcode ? `${(currentGcode.characters / 1_000_000).toFixed(2)} MB` : 'Generated on confirmation'}</p></section></div>{review.messages.length > 0 && <div className="review-messages">{review.messages.map((message) => <p key={message}><AlertTriangle size={14} />{message}</p>)}</div>}<div className="review-actions"><button type="button" onClick={() => setReviewOpen(false)}>Back to edit</button><button type="button" className="export-confirm" disabled={review.level === 'blocking' || gcodeState === 'generating'} onClick={() => { const approvedKey = reviewKey; setReviewOpen(false); requestGcode('download', approvedKey); }}>{gcodeState === 'generating' ? 'Generating G-code…' : review.level === 'warning' ? 'Export anyway' : 'Export G-code'}</button></div></section></div>}
+    <footer>{complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey && <div className="warning complexity-warning"><AlertTriangle size={15} />This setting estimates {complexity.movements.toLocaleString()} movements and may use significant memory. Recommended: ≥ {complexity.recommendedDetail.toFixed(2)} mm.<button onClick={() => setApprovedExtremeKey(complexityKey)}>Process anyway</button></div>}{workerError && <div className="warning"><AlertTriangle size={15} />{workerError}</div>}{currentJobResult?.warnings.map((warning) => <div className="warning" key={warning}><AlertTriangle size={15} />{warning}</div>)}{currentStats && currentJobResult && <div className="stats"><span>{currentStats.movementCount} movements</span><span>{currentStats.working} working / {currentStats.travels} travel moves</span><span>{currentStats.work.toFixed(1)} {settings.units} work</span><span>{currentStats.travel.toFixed(1)} {settings.units} travel</span><span>{formatEstimatedDuration(currentStats.estimate.totalMinutes)}</span><span>X {currentStats.bounds?.minX.toFixed(1)}–{currentStats.bounds?.maxX.toFixed(1)} · Y {currentStats.bounds?.minY.toFixed(1)}–{currentStats.bounds?.maxY.toFixed(1)}</span></div>}<div className="safety"><AlertTriangle size={14} /> Always inspect G-code and verify your machine configuration. Previewing does not guarantee safe operation.<span className="footer-license">© 2026 William Xu · <a href="https://github.com/wxu2206/image-to-gcode/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a> · <a href="https://github.com/wxu2206/image-to-gcode" target="_blank" rel="noopener noreferrer">GitHub</a></span></div></footer>
   </div>;
 }
 

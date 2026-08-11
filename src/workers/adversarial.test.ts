@@ -24,8 +24,8 @@ describe('packed movement integrity', () => {
   });
 
   it('rejects malformed counts and buffer strides', () => {
-    expect(() => previewFromPacked({ count: 2, coordinates: new Float64Array(4), flags: new Uint8Array(2) }, 'low')).toThrow('inconsistent');
-    expect(() => previewFromPacked({ count: -1, coordinates: new Float64Array(), flags: new Uint8Array() }, 'low')).toThrow('inconsistent');
+    expect(() => previewFromPacked({ count: 2, coordinates: new Float64Array(4), durations: new Float64Array(2), flags: new Uint8Array(2) }, 'low')).toThrow('inconsistent');
+    expect(() => previewFromPacked({ count: -1, coordinates: new Float64Array(), durations: new Float64Array(), flags: new Uint8Array() }, 'low')).toThrow('inconsistent');
   });
 
   it('allows preview decimation to omit an extreme while canonical bounds still block export', () => {
@@ -52,6 +52,12 @@ describe('worker message trust boundary', () => {
     const code = '<script>alert(1)</script>\n';
     expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, code, characters: code.length, lines: 1 })).toBe(true);
     expect(isWorkerMessage({ type: 'processed-preview-result', id: 1, preview: { width: 2, height: 1, data: new Uint8Array([0, 255]).buffer } })).toBe(true);
+    const endMinutes = new Float64Array([0.5]);
+    expect(isWorkerMessage({
+      type: 'preview-result', id: 1, requestId: 1,
+      moves: [{ command: 'G1', from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, working: true }],
+      timing: { endMinutes: endMinutes.buffer, totalMinutes: 0.5 }, segments: 1, previewMs: 1,
+    })).toBe(true);
   });
 
   it('rejects malformed response envelopes, non-finite preview coordinates, and inconsistent metadata', () => {
@@ -61,9 +67,11 @@ describe('worker message trust boundary', () => {
       id: 1,
       requestId: 1,
       moves: [{ command: 'G1', from: { x: Number.NaN, y: 0 }, to: { x: 1, y: 1 }, working: true }],
+      timing: { endMinutes: new Float64Array([1]).buffer, totalMinutes: 1 },
       segments: 1,
       previewMs: 1,
     })).toBe(false);
+    expect(isWorkerMessage({ type: 'preview-result', id: 1, requestId: 1, moves: [], timing: { endMinutes: new Float64Array(0).buffer, totalMinutes: 2 }, segments: 0, previewMs: 1 })).toBe(false);
     expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, code: 'G90\n', characters: 999, lines: 1 })).toBe(false);
     expect(isWorkerMessage({ type: 'processed-preview-result', id: 1, preview: { width: 2, height: 1, data: new Uint8Array([0]).buffer } })).toBe(false);
     expect(isWorkerMessage({ type: 'error', id: 1, stage: 'other', message: 'bad' })).toBe(false);
