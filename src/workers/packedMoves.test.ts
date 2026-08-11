@@ -15,12 +15,14 @@ describe('packed worker movements', () => {
   });
 
   it('returns bounded preview timing from canonical feeds without sending all moves', () => {
-    const preview = timedPreviewFromPacked(packMoves([
+    const packed = packMoves([
       { command: 'G0', from: { x: 0, y: 0, z: 0 }, to: { x: 0, y: 0, z: 10 }, working: false, feed: 600 },
       { command: 'G1', from: { x: 0, y: 0, z: 10 }, to: { x: 60, y: 0, z: 10 }, working: true, feed: 300 },
-    ]), 'full');
+    ]);
+    const preview = timedPreviewFromPacked(packed, 'full');
     expect(preview.moves).toHaveLength(2);
     expect([...preview.endMinutes]).toEqual([10 / 600, 10 / 600 + 60 / 300]);
     expect(preview.totalMinutes).toBeCloseTo(13 / 60);
+    expect(timedPreviewFromPacked(packed, 'low').totalMinutes).toBeCloseTo(preview.totalMinutes);
   });
 });
