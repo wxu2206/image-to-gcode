@@ -1,6 +1,7 @@
 import type { GcodeResult, MachineProfile, Move, Point, Settings, Toolpath } from './types';
 import { distance, machinePoint } from './geometry';
 import { configurationErrors, profileErrors, profileWarnings, validate } from './machine';
+import { movementDurationMinutes, type RuntimeEstimate } from './runtime';
 import { fromMillimetres } from './units';
 
 export type ToolpathStats = {
@@ -12,6 +13,7 @@ export type ToolpathStats = {
   travels: number;
   /** Estimated duration in minutes; configured feeds are units per minute. */
   time: number;
+  estimate: RuntimeEstimate;
   bounds: { minX: number; maxX: number; minY: number; maxY: number; minZ: number | null; maxZ: number | null } | null;
 };
 
@@ -248,6 +250,8 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
   let working = 0;
   let travels = 0;
   let time = 0;
+  let workMinutes = 0;
+  let travelMinutes = 0;
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
@@ -285,7 +289,10 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
       travel += validDistance;
       travels += 1;
     }
-    if (Number.isFinite(move.feed) && move.feed !== undefined && move.feed > 0) time += validDistance / move.feed;
+    const duration = movementDurationMinutes(move);
+    time += duration;
+    if (move.working) workMinutes += duration;
+    else travelMinutes += duration;
     if (index % 4096 === 0) onProgress?.(index, moves.length);
   }
   onProgress?.(moves.length, moves.length);
@@ -297,6 +304,7 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
     working,
     travels,
     time,
+    estimate: { totalMinutes: time, workMinutes, travelMinutes },
     bounds: hasCoordinates
       ? {
         minX: minX === 0 ? 0 : minX,

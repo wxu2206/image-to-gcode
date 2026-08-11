@@ -7,7 +7,7 @@ export type WorkerMessage =
   | WorkerProgressMessage
   | { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number }
   | { type: 'processed-preview-result'; id: number; preview: { width: number; height: number; data: ArrayBuffer } }
-  | { type: 'preview-result'; id: number; requestId: number; moves: Move[]; segments: number; previewMs: number }
+  | { type: 'preview-result'; id: number; requestId: number; moves: Move[]; timing: { endMinutes: ArrayBuffer; totalMinutes: number }; segments: number; previewMs: number }
   | { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number }
   | { type: 'error'; id: number; stage: WorkerErrorStage; requestId?: number; message: string };
 
@@ -45,9 +45,24 @@ function validStats(value: unknown): value is ToolpathStats {
   if (!(record(value)
     && nonNegative(value.work) && nonNegative(value.travel) && nonNegative(value.total)
     && integer(value.movementCount) && integer(value.working) && integer(value.travels)
-    && nonNegative(value.time) && validBounds(value.bounds))) return false;
+    && nonNegative(value.time) && record(value.estimate)
+    && nonNegative(value.estimate.totalMinutes) && nonNegative(value.estimate.workMinutes) && nonNegative(value.estimate.travelMinutes)
+    && validBounds(value.bounds))) return false;
   return Math.abs(value.total - (value.work + value.travel)) <= 1e-8 * Math.max(1, value.total)
-    && value.movementCount === value.working + value.travels;
+    && value.movementCount === value.working + value.travels
+    && Math.abs(value.time - value.estimate.totalMinutes) <= 1e-8 * Math.max(1, value.time)
+    && Math.abs(value.estimate.totalMinutes - (value.estimate.workMinutes + value.estimate.travelMinutes)) <= 1e-8 * Math.max(1, value.estimate.totalMinutes);
+}
+
+function validPreviewTiming(value: unknown, moves: readonly Move[]): boolean {
+  if (!record(value) || !(value.endMinutes instanceof ArrayBuffer) || !nonNegative(value.totalMinutes) || value.endMinutes.byteLength !== moves.length * Float64Array.BYTES_PER_ELEMENT) return false;
+  const endMinutes = new Float64Array(value.endMinutes);
+  let previous = 0;
+  for (const minute of endMinutes) {
+    if (!nonNegative(minute) || minute < previous || minute > value.totalMinutes) return false;
+    previous = minute;
+  }
+  return moves.length === 0 ? value.totalMinutes === 0 : Math.abs(previous - value.totalMinutes) <= 1e-8 * Math.max(1, value.totalMinutes);
 }
 
 const timingKeys: Array<keyof WorkerTimings> = [
@@ -86,7 +101,7 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
   if (value.type === 'preview-result') {
     return integer(value.requestId) && Array.isArray(value.moves) && value.moves.length <= 60_001
       && value.moves.every(validMove) && integer(value.segments) && value.segments === value.moves.length
-      && nonNegative(value.previewMs);
+      && validPreviewTiming(value.timing, value.moves) && nonNegative(value.previewMs);
   }
   if (value.type === 'gcode-result') {
     return integer(value.requestId) && typeof value.code === 'string'
