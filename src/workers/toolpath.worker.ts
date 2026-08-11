@@ -14,6 +14,7 @@ type PreviewJobRequest = { type: 'prepare-preview'; id: number; requestId: numbe
 type SerializeRequest = { type: 'serialize-gcode'; id: number; requestId: number };
 type JobRequest = RunJobRequest | PreviewJobRequest | SerializeRequest;
 type JobResult = { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number };
+type ProcessedPreviewResult = { type: 'processed-preview-result'; id: number; preview: { width: number; height: number; data: ArrayBuffer } };
 type PreviewResult = { type: 'preview-result'; id: number; requestId: number; moves: ReturnType<typeof previewFromPacked>; segments: number; previewMs: number };
 type GcodeResult = { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number };
 type JobError = { type: 'error'; id: number; stage: 'run' | 'preview' | 'serialize'; requestId?: number; message: string };
@@ -57,6 +58,16 @@ function run(job: RunJobRequest) {
       (done, total) => report('image', done, total),
     );
     const imageMs = performance.now() - imageStart;
+    // The source image is already bounded to 900px on its longest edge. Return a
+    // one-byte grayscale copy immediately so the Processed tab reflects this exact
+    // processing pass without retaining or transferring canonical movements.
+    const processedPreview = image.data.slice();
+    const processedPreviewBytes = processedPreview.byteLength;
+    worker.postMessage({
+      type: 'processed-preview-result',
+      id: job.id,
+      preview: { width: image.width, height: image.height, data: processedPreview.buffer },
+    } satisfies ProcessedPreviewResult, [processedPreview.buffer]);
     const reductionStart = performance.now();
     const machineImage = resampleForToolpath(image, job.settings, (done, total) => report('reduce', done, total));
     const reductionMs = performance.now() - reductionStart;
@@ -87,7 +98,7 @@ function run(job: RunJobRequest) {
     // movements remain in the worker; the main thread only receives preview geometry.
     built.moves.length = 0;
     completed = { id: job.id, toolpath, settings: job.settings, profile: job.profile, packed };
-    worker.postMessage({ type: 'result', id: job.id, warnings: built.warnings, stats, timings: { imageMs, reductionMs, extractionMs, orderingMs, movementMs, gcodeMs: 0, statisticsMs, totalMs: performance.now() - started, pathCount: toolpath.paths.length, pointCount, movementCount, gcodeCharacters: 0, packedMovementBytes: packedBytes, transferBytes: 0 }, sentAt: performance.timeOrigin + performance.now() } satisfies JobResult);
+    worker.postMessage({ type: 'result', id: job.id, warnings: built.warnings, stats, timings: { imageMs, reductionMs, extractionMs, orderingMs, movementMs, gcodeMs: 0, statisticsMs, totalMs: performance.now() - started, pathCount: toolpath.paths.length, pointCount, movementCount, gcodeCharacters: 0, packedMovementBytes: packedBytes, transferBytes: processedPreviewBytes }, sentAt: performance.timeOrigin + performance.now() } satisfies JobResult);
   } catch (error) {
     worker.postMessage({ type: 'error', id: job.id, stage: 'run', message: error instanceof Error ? error.message : 'Toolpath processing failed.' } satisfies JobError);
   }

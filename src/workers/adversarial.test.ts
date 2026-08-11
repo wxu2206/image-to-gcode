@@ -51,6 +51,7 @@ describe('worker message trust boundary', () => {
     expect(isWorkerMessage({ type: 'progress', id: 1, stage: 'preview', label: stageLabel.preview, stageProgress: 0.5, overallProgress: 0.9, requestId: 2 })).toBe(true);
     const code = '<script>alert(1)</script>\n';
     expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, code, characters: code.length, lines: 1 })).toBe(true);
+    expect(isWorkerMessage({ type: 'processed-preview-result', id: 1, preview: { width: 2, height: 1, data: new Uint8Array([0, 255]).buffer } })).toBe(true);
   });
 
   it('rejects malformed response envelopes, non-finite preview coordinates, and inconsistent metadata', () => {
@@ -64,6 +65,7 @@ describe('worker message trust boundary', () => {
       previewMs: 1,
     })).toBe(false);
     expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, code: 'G90\n', characters: 999, lines: 1 })).toBe(false);
+    expect(isWorkerMessage({ type: 'processed-preview-result', id: 1, preview: { width: 2, height: 1, data: new Uint8Array([0]).buffer } })).toBe(false);
     expect(isWorkerMessage({ type: 'error', id: 1, stage: 'other', message: 'bad' })).toBe(false);
   });
 });

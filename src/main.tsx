@@ -10,6 +10,7 @@ import type { ConversionMode, Move, PreviewQuality, Settings } from './core/type
 import { decodeImageFile, readImagePixels } from './image/loadImage';
 import { applyWorkerProgress, initialProgress, isCurrentPreviewRequest, previewProgress, startingProgress, type PipelineProgress, type WorkerTimings } from './workers/progress';
 import { fitViewport, zoomAtCursor, type Viewport } from './visualization/viewport';
+import { activePathEndpoints, grayscaleToRgba, imagePlacementCorners, isCurrentProcessedPreview, processingPreviewKey, type PreviewMode, type ProcessedPreview } from './visualization/preview';
 import { centerTransform, fitTransformToWorkArea, normalizeRotation } from './core/transform';
 import { transformedBounds } from './core/transform';
 import { machinePoint } from './core/geometry';
@@ -57,6 +58,7 @@ type RuntimeTimings = WorkerTimings & { transferMs: number; previewPreparationMs
 type JobSummary = { id: number; key: string; warnings: string[] };
 type LoadedGcode = { jobId: number; key: string; code: string; characters: number; lines: number };
 type LoadedImage = { naturalWidth: number; naturalHeight: number };
+type RasterPreview = { width: number; height: number; data: Uint8ClampedArray; grayscale: boolean };
 
 function PlacementControls({ settings, aspectRatio, update }: { settings: Settings; aspectRatio: number; update: (values: Partial<Settings>) => void }) {
   const resize = (key: 'outputWidth' | 'outputHeight', value: number) => {
@@ -84,6 +86,10 @@ export function App() {
   const [name, setName] = useState('');
   const [jobResult, setJobResult] = useState<JobSummary | null>(null);
   const [previewMoves, setPreviewMoves] = useState<Move[] | null>(null);
+  const [processedPreview, setProcessedPreview] = useState<ProcessedPreview | null>(null);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>('toolpath');
+  const [showTravel, setShowTravel] = useState(true);
+  const [showEndpoints, setShowEndpoints] = useState(true);
   const [gcode, setGcode] = useState<LoadedGcode | null>(null);
   const [gcodeState, setGcodeState] = useState<'idle' | 'generating' | 'ready' | 'error'>('idle');
   const [approvedExtremeKey, setApprovedExtremeKey] = useState<string | null>(null);
@@ -114,6 +120,7 @@ export function App() {
   const renderRef = useRef(0);
   const renderedPreviewRef = useRef<Move[] | null>(null);
   const cachedPreviewRef = useRef<{ moves: Move[]; workHeight: number; work: Path2D; travel: Path2D } | null>(null);
+  const rasterCanvasRef = useRef<{ data: Uint8ClampedArray; grayscale: boolean; canvas: HTMLCanvasElement } | null>(null);
   const panFrameRef = useRef(0);
   const pendingPanRef = useRef<{ x: number; y: number } | null>(null);
   const viewportFrameRef = useRef(0);
@@ -157,6 +164,8 @@ export function App() {
     ? canonicalJobKey(sourceRevision, workerSettings, profile, mode)
     : null, [sourcePixels, sourceRevision, workerSettings, profile, mode]);
   currentJobKeyRef.current = jobKey;
+  const processedKey = sourcePixels ? processingPreviewKey(sourceRevision, settings) : null;
+  const currentProcessedPreview = isCurrentProcessedPreview(processedPreview, processedKey) ? processedPreview : null;
   const placementPending = settings.outputWidth !== stablePlacement.outputWidth || settings.outputHeight !== stablePlacement.outputHeight || settings.offsetX !== stablePlacement.offsetX || settings.offsetY !== stablePlacement.offsetY || settings.rotationDeg !== stablePlacement.rotationDeg;
   const currentJobResult = isCurrentJobRevision(jobResult, jobRef.current, jobKey) ? jobResult : null;
   const currentStats = currentJobResult ? stats : null;
@@ -165,6 +174,9 @@ export function App() {
   const currentGcode = currentJobResult && isCurrentRevision(gcode?.key, jobKey) && gcode?.jobId === currentJobResult.id ? gcode : null;
   const reviewedRevisionCurrent = !reviewOpen || reviewKey === jobKey;
   const validWorkArea = Number.isFinite(settings.workWidth) && Number.isFinite(settings.workHeight) && settings.workWidth > 0 && settings.workHeight > 0;
+  const imagePreviewBounds = useMemo(() => image && validWorkArea && Number.isFinite(settings.outputWidth) && Number.isFinite(settings.outputHeight) && settings.outputWidth > 0 && settings.outputHeight > 0
+    ? transformedBounds(settings)
+    : null, [image, validWorkArea, settings]);
   const review = useMemo(() => buildExportReview({
     settings,
     stats: currentStats,
@@ -215,6 +227,7 @@ export function App() {
         setGcodeState('error');
         setJobResult(null);
         setPreviewMoves(null);
+        setProcessedPreview(null);
         setStats(null);
         setTimings(null);
         pendingGcodeAction.current = null;
@@ -232,6 +245,15 @@ export function App() {
         setStats(message.stats);
         setPipeline({ label: 'Preparing preview…', value: 0.9, active: true });
         setTimings({ ...message.timings, transferMs: Math.max(0, performance.timeOrigin + performance.now() - message.sentAt), previewPreparationMs: null, previewSegments: 0, previewMs: null });
+      } else if (message.type === 'processed-preview-result') {
+        setProcessedPreview({
+          jobId: message.id,
+          jobKey,
+          processingKey: processedKey!,
+          width: message.preview.width,
+          height: message.preview.height,
+          data: new Uint8ClampedArray(message.preview.data),
+        });
       } else if (message.type === 'preview-result') {
         if (!isCurrentPreviewRequest(previewRequestRef.current, message.requestId)) return;
         setPreviewMoves(message.moves);
@@ -266,6 +288,7 @@ export function App() {
         if (message.stage === 'run') {
           setJobResult(null);
           setPreviewMoves(null);
+          setProcessedPreview(null);
           setStats(null);
           setTimings(null);
         }
@@ -278,6 +301,7 @@ export function App() {
         setGcodeState('error');
         setJobResult(null);
         setPreviewMoves(null);
+        setProcessedPreview(null);
         setStats(null);
         setTimings(null);
         pendingGcodeAction.current = null;
@@ -297,7 +321,7 @@ export function App() {
       setWorkerError('The toolpath job could not be sent to the worker.');
     }
     return () => worker.terminate();
-  }, [sourcePixels, workerSettings, profile, mode, complexity, complexityKey, approvedExtremeKey, jobKey]);
+  }, [sourcePixels, workerSettings, profile, mode, complexity, complexityKey, approvedExtremeKey, jobKey, processedKey]);
 
   useEffect(() => {
     if (!currentJobResult || !jobKey) return;
@@ -329,11 +353,15 @@ export function App() {
     const scale = Math.min((width - 40) / settings.workWidth, (height - 40) / settings.workHeight) * zoom;
     const originX = (width - settings.workWidth * scale) / 2 + pan.x;
     const originY = (height - settings.workHeight * scale) / 2 + pan.y;
-    const clearAndFrame = () => {
+    const screen = (point: { x: number; y: number }) => ({ x: originX + point.x * scale, y: originY + (settings.workHeight - point.y) * scale });
+    const clear = () => {
       context.setTransform(1, 0, 0, 1, 0, 0);
       context.fillStyle = '#101318'; context.fillRect(0, 0, width, height);
       context.fillStyle = '#151d25'; context.fillRect(originX, originY, settings.workWidth * scale, settings.workHeight * scale);
-      context.strokeStyle = '#4d5968'; context.strokeRect(originX, originY, settings.workWidth * scale, settings.workHeight * scale);
+    };
+    const foreground = () => {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.strokeStyle = '#4d5968'; context.lineWidth = 1; context.strokeRect(originX, originY, settings.workWidth * scale, settings.workHeight * scale);
       context.fillStyle = '#8795a8'; context.font = '11px monospace'; context.fillText('WORK AREA', originX + 6, originY + 14);
       const markerX = originX;
       const markerY = originY + settings.workHeight * scale;
@@ -344,22 +372,86 @@ export function App() {
       if (editPlacement) {
         const corners = [{ x: 0, y: 0 }, { x: settings.outputWidth, y: 0 }, { x: settings.outputWidth, y: settings.outputHeight }, { x: 0, y: settings.outputHeight }].map((point) => machinePoint(point, settings));
         context.strokeStyle = '#ffbd59'; context.lineWidth = 1.2; context.setLineDash([5, 4]); context.beginPath();
-        corners.forEach((point, index) => { const x = originX + point.x * scale; const y = originY + (settings.workHeight - point.y) * scale; if (index) context.lineTo(x, y); else context.moveTo(x, y); });
+        corners.forEach((point, index) => { const mapped = screen(point); if (index) context.lineTo(mapped.x, mapped.y); else context.moveTo(mapped.x, mapped.y); });
         context.closePath(); context.stroke(); context.setLineDash([]);
         context.fillStyle = '#ffbd59';
-        for (const point of corners) { const x = originX + point.x * scale; const y = originY + (settings.workHeight - point.y) * scale; context.fillRect(x - 3, y - 3, 6, 6); }
+        for (const point of corners) { const mapped = screen(point); context.fillRect(mapped.x - 3, mapped.y - 3, 6, 6); }
       }
+    };
+    const rasterCanvas = (raster: RasterPreview) => {
+      const cached = rasterCanvasRef.current;
+      if (cached?.data === raster.data && cached.grayscale === raster.grayscale) return cached.canvas;
+      const bitmap = document.createElement('canvas');
+      bitmap.width = raster.width; bitmap.height = raster.height;
+      const bitmapContext = bitmap.getContext('2d');
+      if (!bitmapContext) return null;
+      const pixels = bitmapContext.createImageData(raster.width, raster.height);
+      pixels.data.set(raster.grayscale ? grayscaleToRgba(raster.data) : raster.data);
+      bitmapContext.putImageData(pixels, 0, 0);
+      rasterCanvasRef.current = { data: raster.data, grayscale: raster.grayscale, canvas: bitmap };
+      return bitmap;
+    };
+    const drawRaster = (raster: RasterPreview) => {
+      const bitmap = rasterCanvas(raster);
+      if (!bitmap) return;
+      const corners = imagePlacementCorners(settings);
+      const topLeft = screen(corners.topLeft);
+      const topRight = screen(corners.topRight);
+      const bottomLeft = screen(corners.bottomLeft);
+      context.save();
+      context.setTransform(
+        (topRight.x - topLeft.x) / raster.width,
+        (topRight.y - topLeft.y) / raster.width,
+        (bottomLeft.x - topLeft.x) / raster.height,
+        (bottomLeft.y - topLeft.y) / raster.height,
+        topLeft.x,
+        topLeft.y,
+      );
+      context.imageSmoothingEnabled = !raster.grayscale;
+      context.drawImage(bitmap, 0, 0);
+      context.restore();
+    };
+    const drawMessage = (message: string) => {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.fillStyle = '#8f9dad'; context.font = '12px system-ui'; context.textAlign = 'center';
+      context.fillText(message, width / 2, height / 2); context.textAlign = 'start';
+    };
+    const drawEndpoints = () => {
+      if (!showEndpoints) return;
+      const endpoints = activePathEndpoints(currentPreviewMoves);
+      if (!endpoints) return;
+      const draw = (point: { x: number; y: number }, color: string, label: string, filled: boolean) => {
+        const mapped = screen(point);
+        context.beginPath(); context.arc(mapped.x, mapped.y, 4, 0, Math.PI * 2);
+        context.fillStyle = filled ? color : '#101318'; context.fill(); context.strokeStyle = color; context.lineWidth = 1.5; context.stroke();
+        context.fillStyle = color; context.font = '10px monospace'; context.fillText(label, mapped.x + 7, mapped.y - 7);
+      };
+      draw(endpoints.start, '#39d98a', 'START', false);
+      draw(endpoints.end, '#ffbd59', 'END', true);
     };
     const stroke = (work: Path2D, travel: Path2D) => {
       context.save(); context.translate(originX, originY); context.scale(scale, scale);
-      context.globalAlpha = .35; context.strokeStyle = '#586273'; context.lineWidth = .7 / scale; context.stroke(travel);
+      if (showTravel) {
+        context.globalAlpha = .28; context.strokeStyle = '#586273'; context.lineWidth = .7 / scale; context.stroke(travel);
+      }
       context.globalAlpha = .9; context.strokeStyle = '#39d98a'; context.lineWidth = 1.2 / scale; context.stroke(work);
       context.restore(); context.globalAlpha = 1;
     };
-    clearAndFrame();
+    clear();
+    const raster: RasterPreview | null = previewMode === 'original' && sourcePixels
+      ? { width: sourcePixels.width, height: sourcePixels.height, data: sourcePixels.data, grayscale: false }
+      : previewMode === 'processed' && currentProcessedPreview
+        ? { width: currentProcessedPreview.width, height: currentProcessedPreview.height, data: currentProcessedPreview.data, grayscale: true }
+        : null;
+    if (previewMode !== 'toolpath') {
+      if (raster) drawRaster(raster);
+      else drawMessage('Processed preview is preparing…');
+      foreground();
+      return;
+    }
     const cached = cachedPreviewRef.current;
     if (currentPreviewMoves !== null && cached?.moves === currentPreviewMoves && cached.workHeight === settings.workHeight) {
-      stroke(cached.work, cached.travel);
+      stroke(cached.work, cached.travel); drawEndpoints(); foreground();
       return;
     }
     const moves = currentPreviewMoves ?? [];
@@ -391,7 +483,7 @@ export function App() {
         path.lineTo(move.to.x, settings.workHeight - move.to.y);
       }
       completeWork.addPath(work); completeTravel.addPath(travel);
-      stroke(work, travel);
+      stroke(work, travel); drawEndpoints(); foreground();
       if (initialRender && (performance.now() - lastUiUpdate > 80 || index === moves.length)) {
         lastUiUpdate = performance.now();
         setPipeline({ label: 'Rendering preview…', value: previewProgress(index, moves.length), active: index < moves.length });
@@ -400,9 +492,9 @@ export function App() {
       else finish();
     };
     if (moves.length) frame = requestAnimationFrame(draw);
-    else finish();
+    else { drawMessage(currentPreviewMoves ? 'No movements to preview.' : 'Toolpath preview is preparing…'); foreground(); finish(); }
     return () => { cancelled = true; cancelAnimationFrame(frame); };
-  }, [image, currentPreviewMoves, settings, editPlacement, zoom, pan, validWorkArea]);
+  }, [image, sourcePixels, currentProcessedPreview, currentPreviewMoves, previewMode, showTravel, showEndpoints, settings, editPlacement, zoom, pan, validWorkArea]);
 
   useEffect(() => {
     const element = playbackCanvas.current;
@@ -410,7 +502,7 @@ export function App() {
     const context = element.getContext('2d');
     if (!context) return;
     context.clearRect(0, 0, element.width, element.height);
-    if (!validWorkArea) return;
+    if (!validWorkArea || previewMode !== 'toolpath') return;
     const moves = currentPreviewMoves;
     if (!moves?.length) return;
     const move = moves[Math.min(moves.length - 1, Math.floor(moves.length * playbackProgress))];
@@ -421,23 +513,27 @@ export function App() {
     context.beginPath();
     context.arc(originX + move.to.x * scale, originY + (settings.workHeight - move.to.y) * scale, 4, 0, 7);
     context.fill();
-  }, [image, currentPreviewMoves, settings.workWidth, settings.workHeight, zoom, pan, playbackProgress, validWorkArea]);
+  }, [image, currentPreviewMoves, previewMode, settings.workWidth, settings.workHeight, zoom, pan, playbackProgress, validWorkArea]);
 
   useEffect(() => {
-    if (!playing || !currentPreviewMoves) return;
+    if (previewMode !== 'toolpath') setPlaying(false);
+  }, [previewMode]);
+
+  useEffect(() => {
+    if (!playing || !currentPreviewMoves || previewMode !== 'toolpath') return;
     const timer = window.setInterval(() => setPlaybackProgress((current) => {
       if (current >= 1) { setPlaying(false); return 1; }
       return current + 0.01;
     }), 100);
     return () => window.clearInterval(timer);
-  }, [playing, currentPreviewMoves]);
+  }, [playing, currentPreviewMoves, previewMode]);
 
   const upload = async (file: File) => {
     const uploadId = uploadRequestRef.current + 1;
     uploadRequestRef.current = uploadId;
     jobRef.current += 1;
     workerRef.current?.terminate();
-    setImage(null); setSourcePixels(null); setJobResult(null); setPreviewMoves(null); setGcode(null); setGcodeState('idle'); setStats(null); setTimings(null);
+    setImage(null); setSourcePixels(null); setProcessedPreview(null); setJobResult(null); setPreviewMoves(null); setGcode(null); setGcodeState('idle'); setStats(null); setTimings(null);
     setPipeline({ label: 'Decoding image…', value: 0, active: true });
     setWorkerError(null); setName(''); setPlaying(false); setPlaybackProgress(0);
     try {
@@ -520,10 +616,11 @@ export function App() {
     if (!validWorkArea) return;
     const target = viewportCanvas();
     if (!target) return;
-    const next = fitViewport(currentStats?.bounds ?? null, target, { width: settings.workWidth, height: settings.workHeight });
+    const bounds = previewMode === 'toolpath' ? currentStats?.bounds ?? null : imagePreviewBounds;
+    const next = fitViewport(bounds, target, { width: settings.workWidth, height: settings.workHeight });
     pendingViewportRef.current = null;
     setZoom(next.zoom); setPan(next.pan);
-  }, [currentStats?.bounds, settings.workWidth, settings.workHeight, validWorkArea]);
+  }, [previewMode, currentStats?.bounds, imagePreviewBounds, settings.workWidth, settings.workHeight, validWorkArea]);
   const handlePreviewWheel = (event: React.WheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
     const delta = Math.max(-100, Math.min(100, event.deltaY));
@@ -575,10 +672,10 @@ export function App() {
     drag.current = null; placementDrag.current = null; event.currentTarget.classList.remove('is-panning', 'is-placing');
   };
   useEffect(() => {
-    if (!currentJobResult || !currentStats?.bounds || fittedJobRef.current === currentJobResult.id) return;
+    if (previewMode !== 'toolpath' || !currentJobResult || !currentStats?.bounds || fittedJobRef.current === currentJobResult.id) return;
     fittedJobRef.current = currentJobResult.id;
     fitPreview();
-  }, [currentJobResult, currentStats?.bounds, fitPreview]);
+  }, [previewMode, currentJobResult, currentStats?.bounds, fitPreview]);
   const saveGcode = (code: string) => {
     try {
       downloadGcodeDocument(code, gcodeFilename(name, mode));
@@ -620,23 +717,28 @@ export function App() {
       <aside className="sidebar"><h2>Job setup</h2><label>Conversion mode<select value={mode} onChange={(event) => setMode(event.target.value as ConversionMode)}><option value="raster">Raster / scanline</option><option value="contour">Contour / outline</option><option value="grayscale">Grayscale engraving</option></select></label><label>Machine profile<select value={profileId} onChange={(event) => setProfileId(event.target.value)}>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="minor" onClick={() => { const custom = { ...profile, id: crypto.randomUUID(), name: `Custom ${profile.name}` }; setProfiles((current) => { const next = [...current, custom]; writeLocalSetting('i2g-profiles', JSON.stringify(next.filter((item) => !['cnc', 'pen', 'laser'].includes(item.id)))); return next; }); setProfileId(custom.id); }}>Duplicate profile</button>{image && <PlacementControls settings={settings} aspectRatio={image.naturalWidth / image.naturalHeight} update={updateTransform} />}<h3>Machine</h3><div className="grid"><label>Units<select value={settings.units} onChange={(event) => changeUnits(event.target.value as Settings['units'])}><option value="mm">Millimeters</option><option value="in">Inches</option></select></label><label>Origin<select value={settings.origin} onChange={(event) => set('origin', event.target.value as Settings['origin'])}><option value="bottom-left">Bottom left</option><option value="top-left">Top left</option><option value="center">Center</option></select></label>{machineNumKeys.map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" value={settings[key]} step={key.includes('Width') || key.includes('Height') ? 1 : 0.1} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div><label className="check"><input type="checkbox" checked={settings.invertX} onChange={(event) => set('invertX', event.target.checked)} /> Invert X</label><label className="check"><input type="checkbox" checked={settings.invertY} onChange={(event) => set('invertY', event.target.checked)} /> Invert Y</label><h3>Toolpath quality</h3><label className="detail-control" htmlFor="toolpath-detail"><span>Toolpath Detail <b>{detailLabel(settings.toolpathDetail)}</b></span><output>{settings.toolpathDetail.toFixed(2)} mm</output><input id="toolpath-detail" aria-describedby="toolpath-detail-help" type="range" min="0.1" max="1" step="0.05" value={settings.toolpathDetail} onChange={(event) => set('toolpathDetail', Number(event.target.value))} /><small id="toolpath-detail-help">Controls minimum physical detail in the generated toolpath. Higher values reduce movements, processing time, and file size.</small></label>{currentTimings && <div className="complexity">{currentTimings.movementCount.toLocaleString()} movements<br />{Math.round(currentTimings.packedMovementBytes / 1024).toLocaleString()} KiB worker-packed<br />{currentGcode ? `${(currentGcode.characters / 1_000_000).toFixed(2)} MB G-code` : 'G-code generated on demand'}</div>}<label className="preview-quality"><span>Preview Quality</span><small>Canvas only — never changes G-code or statistics.</small><div role="group" aria-label="Preview Quality">{(['low', 'balanced', 'high', 'full'] as PreviewQuality[]).map((quality) => <button key={quality} type="button" className={settings.previewQuality === quality ? 'selected' : ''} aria-pressed={settings.previewQuality === quality} onClick={() => set('previewQuality', quality)}>{quality}</button>)}</div></label><h3>Image processing</h3><label>Filter<select value={settings.filter} onChange={(event) => set('filter', event.target.value as Settings['filter'])}><option value="grayscale">Grayscale</option><option value="threshold">Threshold</option><option value="edge">Edge detection</option><option value="dither">Dithering</option></select></label><div className="grid">{imageProcessNumKeys.map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" value={settings[key]} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div><label className="check"><input type="checkbox" checked={settings.invert} onChange={(event) => set('invert', event.target.checked)} /> Invert image</label><label className="check"><input type="checkbox" checked={settings.serpentine} onChange={(event) => set('serpentine', event.target.checked)} /> Serpentine scan</label></aside>
       <section className="workspace">
         <div className="workspace-head">
-          <div>{name ? <><b>{name}</b> · {image?.naturalWidth} × {image?.naturalHeight}px · {(image!.naturalWidth / image!.naturalHeight).toFixed(2)}:1</> : 'No image loaded — import a file or drop it below'}</div>
-          <div className="iconbar" aria-label="Preview controls">
-            {image && <button type="button" className={editPlacement ? 'selected' : ''} aria-pressed={editPlacement} title="Edit image placement" onClick={() => setEditPlacement((value) => !value)}>Edit placement</button>}
-            <button type="button" title="Zoom out" aria-label="Zoom out" onClick={() => zoomPreview(1 / 1.2)}><ZoomOut size={16} /></button>
-            <output className="zoom-readout" aria-live="polite">{Math.round(zoom * 100)}%</output>
-            <button type="button" title="Zoom in" aria-label="Zoom in" onClick={() => zoomPreview(1.2)}><ZoomIn size={16} /></button>
-            <button type="button" title="Fit toolpath to preview" aria-label="Fit toolpath to preview" onClick={fitPreview}><RotateCcw size={16} /></button>
+          <div className="file-meta">{name ? <><b>{name}</b> · {image?.naturalWidth} × {image?.naturalHeight}px · {(image!.naturalWidth / image!.naturalHeight).toFixed(2)}:1</> : 'No image loaded — import a file or drop it below'}</div>
+          <div className="preview-tools">
+            <div className="preview-modes" role="group" aria-label="Preview mode">
+              {(['original', 'processed', 'toolpath'] as PreviewMode[]).map((candidate) => <button key={candidate} type="button" disabled={!image} className={previewMode === candidate ? 'selected' : ''} aria-pressed={previewMode === candidate} onClick={() => setPreviewMode(candidate)}>{candidate[0].toUpperCase()}{candidate.slice(1)}</button>)}
+            </div>
+            <div className="iconbar" aria-label="Viewport controls">
+              {image && <button type="button" className={editPlacement ? 'selected' : ''} aria-pressed={editPlacement} title="Edit image placement" onClick={() => setEditPlacement((value) => !value)}>Edit placement</button>}
+              <button type="button" title="Zoom out" aria-label="Zoom out" disabled={!image} onClick={() => zoomPreview(1 / 1.2)}><ZoomOut size={16} /></button>
+              <output className="zoom-readout" aria-live="polite">{Math.round(zoom * 100)}%</output>
+              <button type="button" title="Zoom in" aria-label="Zoom in" disabled={!image} onClick={() => zoomPreview(1.2)}><ZoomIn size={16} /></button>
+              <button type="button" title="Fit current preview" aria-label="Fit current preview" disabled={!image} onClick={fitPreview}><RotateCcw size={16} /></button>
+            </div>
           </div>
         </div>
         <div className="job-progress" title={timingTitle || undefined}><div className="progress-copy"><span>{pipeline.label}</span><b>{Math.round(pipeline.value * 100)}%</b></div><div className="progress-track"><progress aria-label="Toolpath processing progress" max="1" value={pipeline.value} /></div>{currentTimings && <small>{currentTimings.movementCount.toLocaleString()} moves · {Math.round(currentTimings.packedMovementBytes / 1024).toLocaleString()} KiB packed · worker {(currentTimings.totalMs / 1000).toFixed(2)} s{currentTimings.previewMs === null ? '' : ` · preview ${(currentTimings.previewMs / 1000).toFixed(2)} s`}</small>}</div>
         <div className="canvas-wrap"><ImageInput variant="dropzone" onFile={upload}>{image ? <div className="toolpath-canvases" onClick={(event) => event.stopPropagation()}>
-          <canvas ref={canvas} width="1100" height="700" tabIndex={0} role="img" aria-label={editPlacement ? 'Image placement editor. Drag the image to move it or drag a corner handle to resize it. Scroll to zoom.' : 'Interactive toolpath preview. Scroll to zoom, drag to pan, double-click to fit.'} onWheel={handlePreviewWheel} onDoubleClick={fitPreview} onPointerDown={startPreviewPointer} onPointerMove={movePreviewPointer} onPointerUp={endPreviewPointer} onPointerCancel={endPreviewPointer} />
-          <canvas ref={playbackCanvas} className="playback-canvas" width="1100" height="700" />
-          <div className="preview-status"><span>{Math.round(zoom * 100)}%</span><span>{settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}</span>{currentTimings?.previewSegments ? <span>{currentTimings.previewSegments.toLocaleString()} segments</span> : null}</div>
-          <div className="preview-hint">{editPlacement ? 'Drag to move · Drag corners to resize · Scroll to zoom' : 'Scroll to zoom · Drag to pan · Double-click to fit'}</div>
+          <canvas ref={canvas} width="1100" height="700" tabIndex={0} role="img" aria-label={editPlacement ? 'Image placement editor. Drag the image to move it or drag a corner handle to resize it. Scroll to zoom.' : `${previewMode[0].toUpperCase()}${previewMode.slice(1)} preview. Scroll to zoom, drag to pan, double-click to fit.`} onWheel={handlePreviewWheel} onDoubleClick={fitPreview} onPointerDown={startPreviewPointer} onPointerMove={movePreviewPointer} onPointerUp={endPreviewPointer} onPointerCancel={endPreviewPointer} />
+          <canvas ref={playbackCanvas} className="playback-canvas" width="1100" height="700" aria-hidden="true" />
+          <div className="preview-status"><span>{previewMode}</span><span>{Math.round(zoom * 100)}%</span><span>{settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}</span>{previewMode === 'toolpath' && currentTimings?.previewSegments ? <span>{currentTimings.previewSegments.toLocaleString()} segments</span> : null}</div>
+          <div className="preview-hint">{editPlacement ? 'Drag to move · Drag corners to resize · Scroll to zoom' : previewMode === 'toolpath' ? 'Scroll to zoom · Drag to pan · Double-click to fit' : 'Preview only · Scroll to zoom · Drag to pan · Double-click to fit'}</div>
         </div> : <div className="preview-empty"><b>Toolpath preview</b><span>Upload an image to generate a preview.</span></div>}</ImageInput></div>
-        <div className="playback"><button aria-label={playing ? 'Pause toolpath playback' : 'Play toolpath playback'} disabled={!currentPreviewMoves} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause /> : <Play />}</button><input aria-label="Toolpath playback" type="range" min="0" max="1" step=".001" value={playbackProgress} onChange={(event) => setPlaybackProgress(Number(event.target.value))} /><button aria-label="Restart toolpath playback" disabled={!currentPreviewMoves} onClick={() => setPlaybackProgress(0)}><RotateCcw /></button><span>{Math.round(playbackProgress * 100)}%</span></div>
+        <div className="playback">{previewMode === 'toolpath' && <div className="preview-overlays" role="group" aria-label="Toolpath overlays"><button type="button" className={showTravel ? 'selected' : ''} aria-pressed={showTravel} title="Show or hide tool-inactive travel moves" onClick={() => setShowTravel((value) => !value)}>Travel</button><button type="button" className={showEndpoints ? 'selected' : ''} aria-pressed={showEndpoints} title="Show or hide active-path start and end markers" onClick={() => setShowEndpoints((value) => !value)}>Start / end</button></div>}<div className="playback-controls"><button aria-label={playing ? 'Pause toolpath playback' : 'Play toolpath playback'} disabled={!currentPreviewMoves || previewMode !== 'toolpath'} onClick={() => setPlaying((value) => !value)}>{playing ? <Pause /> : <Play />}</button><input aria-label="Toolpath playback" disabled={previewMode !== 'toolpath'} type="range" min="0" max="1" step=".001" value={playbackProgress} onChange={(event) => setPlaybackProgress(Number(event.target.value))} /><button aria-label="Restart toolpath playback" disabled={!currentPreviewMoves || previewMode !== 'toolpath'} onClick={() => setPlaybackProgress(0)}><RotateCcw /></button><span>{Math.round(playbackProgress * 100)}%</span></div></div>
       </section>
       <aside className="code"><div className="code-head"><h2>G-code inspector</h2><button disabled={!currentJobResult || placementPending || review.level === 'blocking' || gcodeState === 'generating'} title={review.level === 'blocking' ? 'Resolve blocking export issues before copying' : undefined} onClick={() => requestGcode('copy')}><Copy size={15} /> {gcodeState === 'generating' ? 'Generating…' : 'Copy'}</button></div>{currentGcode ? <><input placeholder="Search G-code" value={search} onChange={(event) => setSearch(event.target.value)} /><p className="code-limit">{search ? 'Showing 200 lines from the match' : `Showing first ${Math.min(2_000, currentGcode.lines).toLocaleString()} of ${currentGcode.lines.toLocaleString()} lines`}</p><pre>{gcodeLines?.lines.map((line, index) => <div key={index} className={search && line.toLowerCase().includes(search.toLowerCase()) ? 'match' : ''}><i>{String((gcodeLines?.start ?? 1) + index).padStart(4, '0')}</i>{line}</div>)}</pre></> : <div className="gcode-empty"><p>{placementPending ? 'Updating image placement…' : currentJobResult ? 'G-code is ready to generate on demand.' : 'Import an image to prepare G-code.'}</p><button disabled={!currentJobResult || placementPending || gcodeState === 'generating'} onClick={() => requestGcode('inspect')}>{gcodeState === 'generating' ? 'Generating G-code…' : 'Open G-code inspector'}</button></div>}</aside>
     </main>
