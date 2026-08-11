@@ -6,6 +6,7 @@ export type WorkerErrorStage = 'run' | 'preview' | 'serialize';
 export type WorkerMessage =
   | WorkerProgressMessage
   | { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number }
+  | { type: 'processed-preview-result'; id: number; preview: { width: number; height: number; data: ArrayBuffer } }
   | { type: 'preview-result'; id: number; requestId: number; moves: Move[]; segments: number; previewMs: number }
   | { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number }
   | { type: 'error'; id: number; stage: WorkerErrorStage; requestId?: number; message: string };
@@ -15,6 +16,7 @@ const record = (value: unknown): value is Record<string, unknown> => typeof valu
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const nonNegative = (value: unknown): value is number => finite(value) && value >= 0;
 const integer = (value: unknown): value is number => nonNegative(value) && Number.isInteger(value);
+const MAX_PROCESSED_PREVIEW_PIXELS = 900 * 900;
 
 function validPoint(value: unknown): boolean {
   if (!record(value) || !finite(value.x) || !finite(value.y)) return false;
@@ -62,6 +64,12 @@ function validWarnings(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= 10_000 && value.every((message) => typeof message === 'string' && message.length <= 16_384);
 }
 
+function validProcessedPreview(value: unknown): boolean {
+  if (!record(value) || !integer(value.width) || !integer(value.height) || value.width === 0 || value.height === 0 || !(value.data instanceof ArrayBuffer)) return false;
+  const pixels = value.width * value.height;
+  return Number.isSafeInteger(pixels) && pixels <= MAX_PROCESSED_PREVIEW_PIXELS && value.data.byteLength === pixels;
+}
+
 export function isWorkerMessage(value: unknown): value is WorkerMessage {
   if (!record(value) || !integer(value.id) || typeof value.type !== 'string') return false;
   if (value.type === 'progress') {
@@ -74,6 +82,7 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
     return validWarnings(value.warnings) && validStats(value.stats) && validTimings(value.timings)
       && value.timings.movementCount === value.stats.movementCount && finite(value.sentAt);
   }
+  if (value.type === 'processed-preview-result') return validProcessedPreview(value.preview);
   if (value.type === 'preview-result') {
     return integer(value.requestId) && Array.isArray(value.moves) && value.moves.length <= 60_001
       && value.moves.every(validMove) && integer(value.segments) && value.segments === value.moves.length
