@@ -11,6 +11,9 @@ export type ToolpathStats = {
   movementCount: number;
   working: number;
   travels: number;
+  /** Number of inactive-to-working transitions, a conservative proxy for tool lowers/lifts. */
+  toolLifts: number;
+  travelEfficiency: number;
   /** Estimated duration in minutes; configured feeds are units per minute. */
   time: number;
   estimate: RuntimeEstimate;
@@ -249,6 +252,8 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
   let travel = 0;
   let working = 0;
   let travels = 0;
+  let toolLifts = 0;
+  let previousWorking = false;
   let time = 0;
   let workMinutes = 0;
   let travelMinutes = 0;
@@ -285,6 +290,7 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
     if (move.working) {
       work += validDistance;
       working += 1;
+      if (!previousWorking) toolLifts += 1;
     } else {
       travel += validDistance;
       travels += 1;
@@ -293,6 +299,7 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
     time += duration;
     if (move.working) workMinutes += duration;
     else travelMinutes += duration;
+    previousWorking = move.working;
     if (index % 4096 === 0) onProgress?.(index, moves.length);
   }
   onProgress?.(moves.length, moves.length);
@@ -303,6 +310,8 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
     movementCount: moves.length,
     working,
     travels,
+    toolLifts,
+    travelEfficiency: work + travel > 0 ? work / (work + travel) : 0,
     time,
     estimate: { totalMinutes: time, workMinutes, travelMinutes },
     bounds: hasCoordinates
