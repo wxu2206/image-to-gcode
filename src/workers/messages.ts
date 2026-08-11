@@ -44,7 +44,7 @@ function validBounds(value: unknown): boolean {
 function validStats(value: unknown): value is ToolpathStats {
   if (!(record(value)
     && nonNegative(value.work) && nonNegative(value.travel) && nonNegative(value.total)
-    && integer(value.movementCount) && integer(value.working) && integer(value.travels)
+    && integer(value.movementCount) && integer(value.working) && integer(value.travels) && integer(value.toolLifts) && nonNegative(value.travelEfficiency) && value.travelEfficiency <= 1
     && nonNegative(value.time) && record(value.estimate)
     && nonNegative(value.estimate.totalMinutes) && nonNegative(value.estimate.workMinutes) && nonNegative(value.estimate.travelMinutes)
     && validBounds(value.bounds))) return false;
