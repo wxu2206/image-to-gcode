@@ -18,7 +18,7 @@ export function detailResolution(source: Pick<GrayImage, 'width' | 'height'>, se
   }
   const physicalWidthMm = toMillimetres(settings.outputWidth, settings.units);
   const physicalHeightMm = toMillimetres(settings.outputHeight, settings.units);
-  const detail = Math.max(0.05, settings.toolpathDetail);
+  const detail = Math.max(0.025, settings.toolpathDetail);
   return {
     width: Math.max(1, Math.min(source.width, Math.ceil(physicalWidthMm / detail))),
     height: Math.max(1, Math.min(source.height, Math.ceil(physicalHeightMm / detail))),

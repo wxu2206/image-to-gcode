@@ -17,4 +17,9 @@ describe('complexity guardrails', () => {
     expect(repeated.movements).toBe(single.movements * 8);
     expect(repeated.level).toBe('extreme');
   });
+  it('treats ultra-fine dense contours as an explicit extreme-job confirmation case', () => {
+    const estimate = estimateComplexity({ width: 900, height: 900 }, { ...defaults, outputWidth: 150, outputHeight: 150, toolpathDetail: .025 }, 'contour');
+    expect(estimate.level).toBe('extreme');
+    expect(estimate.movements).toBeGreaterThan(1_000_000);
+  });
 });

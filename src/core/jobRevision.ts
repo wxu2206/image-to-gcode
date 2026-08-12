@@ -18,7 +18,7 @@ export function canonicalJobKey(sourceRevision: number, settings: Settings, prof
     settings.safeZ, settings.workZ, settings.maxDepth,
     settings.passes, settings.lineSpacing, settings.precision,
     settings.threshold, settings.serpentine, settings.simplify,
-    settings.toolpathDetail,
+    settings.toolpathDetail, settings.noiseCleanup,
     settings.brightness, settings.contrast, settings.invert, settings.filter,
     profile.kind, profile.header, profile.footer, profile.toolOn, profile.toolOff,
     profile.passDepth,

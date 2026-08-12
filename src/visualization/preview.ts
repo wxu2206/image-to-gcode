@@ -17,8 +17,8 @@ export type ProcessedPreview = {
   data: Uint8ClampedArray;
 };
 
-export function processingPreviewKey(sourceRevision: number, settings: Pick<Settings, 'brightness' | 'contrast' | 'invert' | 'filter' | 'threshold'>): string {
-  return JSON.stringify([sourceRevision, settings.brightness, settings.contrast, settings.invert, settings.filter, settings.threshold]);
+export function processingPreviewKey(sourceRevision: number, settings: Pick<Settings, 'brightness' | 'contrast' | 'invert' | 'filter' | 'threshold' | 'noiseCleanup'>): string {
+  return JSON.stringify([sourceRevision, settings.brightness, settings.contrast, settings.invert, settings.filter, settings.threshold, settings.noiseCleanup]);
 }
 
 export function isCurrentProcessedPreview(preview: ProcessedPreview | null, processingKey: string | null): preview is ProcessedPreview {

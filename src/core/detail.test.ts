@@ -25,6 +25,13 @@ describe('physical toolpath detail', () => {
     expect(detailResolution(source, { ...settings, toolpathDetail: .1 })).toMatchObject({ width: 1000, height: 500, physicalWidthMm: 100, physicalHeightMm: 50 });
     expect(detailResolution(source, { ...settings, toolpathDetail: .5 })).toMatchObject({ width: 200, height: 100, physicalWidthMm: 100, physicalHeightMm: 50 });
   });
+  it('supports ultra-fine physical values while remaining limited by source resolution', () => {
+    const source = darkImage(300, 300);
+    expect(detailResolution(source, { ...settings, outputWidth: 100, outputHeight: 100, toolpathDetail: .075 })).toMatchObject({ width: 300, height: 300 });
+    expect(detailResolution(source, { ...settings, outputWidth: 100, outputHeight: 100, toolpathDetail: .025 })).toMatchObject({ width: 300, height: 300 });
+    expect(() => detailResolution(source, { ...settings, toolpathDetail: 0 })).toThrow('greater than zero');
+    expect(() => detailResolution(source, { ...settings, toolpathDetail: Number.NaN })).toThrow('greater than zero');
+  });
   it('keeps detail in physical units when placement is resized', () => {
     const source = darkImage(1000, 500);
     const resized = detailResolution(source, { ...settings, outputWidth: 200, outputHeight: 100, toolpathDetail: .5 });

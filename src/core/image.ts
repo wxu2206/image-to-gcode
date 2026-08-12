@@ -1,6 +1,7 @@
 export type PixelData = { width: number; height: number; data: Uint8ClampedArray };
 export type GrayImage = PixelData;
 export type ImageProgress = (completed: number, total: number) => void;
+export type CleanupResult = { image: GrayImage; removedComponents: number; removedPixels: number };
 
 const reportEvery = 16_384;
 
@@ -89,4 +90,50 @@ export function processImage(
   }
   report(totalWork);
   return { width: input.width, height: input.height, data };
+}
+
+/**
+ * Removes only disconnected dark components whose physical bounding box and area
+ * fall below the selected detail-derived threshold. Dithering is intentionally
+ * excluded because isolated dots carry its tonal information.
+ */
+export function cleanupTinyArtifacts(image: GrayImage, settings: { outputWidth: number; outputHeight: number; units: 'mm' | 'in'; toolpathDetail: number; threshold: number; filter: string; noiseCleanup: 'off' | 'light' | 'normal' | 'strong' }): CleanupResult {
+  if (settings.noiseCleanup === 'off' || settings.filter === 'dither') return { image, removedComponents: 0, removedPixels: 0 };
+  if (!Number.isFinite(settings.outputWidth) || !Number.isFinite(settings.outputHeight) || !Number.isFinite(settings.toolpathDetail) || !Number.isFinite(settings.threshold)) throw new Error('Noise cleanup settings must be finite.');
+  const factor = settings.noiseCleanup === 'light' ? .75 : settings.noiseCleanup === 'normal' ? 1.5 : 2.5;
+  const mmScale = settings.units === 'in' ? 25.4 : 1;
+  // Toolpath Detail is deliberately stored in millimetres even when the output
+  // G-code uses inches (see convertSettingsUnits).
+  const maxSize = Math.max(.01, settings.toolpathDetail * factor);
+  const mmX = settings.outputWidth * mmScale / image.width;
+  const mmY = settings.outputHeight * mmScale / image.height;
+  const visited = new Uint8Array(image.data.length);
+  const output = image.data.slice();
+  const queue = new Int32Array(image.data.length);
+  let removedComponents = 0;
+  let removedPixels = 0;
+  for (let start = 0; start < image.data.length; start += 1) {
+    if (visited[start] || image.data[start] >= settings.threshold) continue;
+    let head = 0; let tail = 0;
+    queue[tail++] = start; visited[start] = 1;
+    let minX = start % image.width; let maxX = minX; let minY = Math.floor(start / image.width); let maxY = minY;
+    while (head < tail) {
+      const index = queue[head++]; const x = index % image.width; const y = Math.floor(index / image.width);
+      if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+      for (let yOffset = -1; yOffset <= 1; yOffset += 1) for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+        if (xOffset === 0 && yOffset === 0) continue;
+        const nextX = x + xOffset; const nextY = y + yOffset;
+        if (nextX < 0 || nextY < 0 || nextX >= image.width || nextY >= image.height) continue;
+        const next = nextY * image.width + nextX;
+        if (!visited[next] && image.data[next] < settings.threshold) { visited[next] = 1; queue[tail++] = next; }
+      }
+    }
+    const componentWidth = (maxX - minX + 1) * mmX;
+    const componentHeight = (maxY - minY + 1) * mmY;
+    if (Math.max(componentWidth, componentHeight) <= maxSize && componentWidth * componentHeight <= maxSize * maxSize) {
+      for (let index = 0; index < tail; index += 1) output[queue[index]] = 255;
+      removedComponents += 1; removedPixels += tail;
+    }
+  }
+  return removedComponents ? { image: { ...image, data: output }, removedComponents, removedPixels } : { image, removedComponents, removedPixels };
 }
