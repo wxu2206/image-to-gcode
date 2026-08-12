@@ -6,6 +6,7 @@ import { optimizeToolpath } from './optimize';
 
 const point = (x: number, y: number): Point => ({ x, y });
 const rasterCoordinate = (index: number, size: number) => size === 1 ? 0.5 : index * size / (size - 1);
+const MAX_CONTOUR_EDGES = 1_500_000;
 export type ConversionSettings = Pick<Settings, 'lineSpacing' | 'outputWidth' | 'outputHeight' | 'threshold' | 'serpentine' | 'simplify' | 'toolpathDetail' | 'units'>;
 export type ConversionStage = 'extract' | 'order';
 export type ConversionProgress = (stage: ConversionStage, completed: number, total: number) => void;
@@ -128,6 +129,9 @@ export function contour(image: GrayImage, settings: ConversionSettings, onProgre
       if (x === 0 || image.data[index - 1] >= settings.threshold) addEdge(vertex(x, y + 1), vertex(x, y));
     }
     if (y % 8 === 0) onProgress?.('extract', y, image.height * 2);
+  }
+  if (edgeCount > MAX_CONTOUR_EDGES) {
+    throw new Error('Contour detail would create too many boundary segments to process safely. Increase Toolpath Detail or use a simpler image.');
   }
 
   const takeNext = (from: number): number | undefined => {

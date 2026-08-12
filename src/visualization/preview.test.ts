@@ -22,6 +22,7 @@ describe('preview-only state', () => {
     const repositioned = { ...settings, outputWidth: 99, offsetX: 20 };
     expect(processingPreviewKey(4, repositioned)).toBe(key);
     expect(processingPreviewKey(4, { ...settings, invert: !settings.invert })).not.toBe(key);
+    expect(processingPreviewKey(4, { ...settings, noiseCleanup: 'strong' })).not.toBe(key);
     expect(isCurrentProcessedPreview({ jobId: 9, jobKey: 'job', processingKey: key, width: 1, height: 1, data: new Uint8ClampedArray([0]) }, key)).toBe(true);
     expect(isCurrentProcessedPreview({ jobId: 9, jobKey: 'job', processingKey: key, width: 1, height: 1, data: new Uint8ClampedArray([0]) }, `${key}-new`)).toBe(false);
   });

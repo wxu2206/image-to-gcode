@@ -3,7 +3,7 @@
 import { convert } from '../core/conversion';
 import { resampleForToolpath } from '../core/detail';
 import { buildMovements, generate, statistics, type ToolpathStats } from '../core/gcode';
-import { processImage } from '../core/image';
+import { cleanupTinyArtifacts, processImage } from '../core/image';
 import { configurationErrors, profileErrors } from '../core/machine';
 import type { ConversionMode, MachineProfile, PreviewQuality, Settings, Toolpath } from '../core/types';
 import { packedMoveBytes, packMoves, timedPreviewFromPacked, type PackedMoves } from './packedMoves';
@@ -52,11 +52,13 @@ function run(job: RunJobRequest) {
     if (errors.length) throw new Error(errors[0]);
     report('image', 0, 1);
     const imageStart = performance.now();
-    const image = processImage(
+    const processed = processImage(
       { width: job.pixels.width, height: job.pixels.height, data: new Uint8ClampedArray(job.pixels.data) },
       { brightness: job.settings.brightness, contrast: job.settings.contrast, invert: job.settings.invert, filter: job.settings.filter, threshold: job.settings.threshold },
       (done, total) => report('image', done, total),
     );
+    const cleanup = cleanupTinyArtifacts(processed, job.settings);
+    const image = cleanup.image;
     const imageMs = performance.now() - imageStart;
     // The source image is already bounded to 900px on its longest edge. Return a
     // one-byte grayscale copy immediately so the Processed tab reflects this exact
@@ -98,6 +100,7 @@ function run(job: RunJobRequest) {
     // movements remain in the worker; the main thread only receives preview geometry.
     built.moves.length = 0;
     completed = { id: job.id, toolpath, settings: job.settings, profile: job.profile, packed };
+    if (cleanup.removedComponents) built.warnings.push(`Noise cleanup removed ${cleanup.removedComponents.toLocaleString()} isolated artifact${cleanup.removedComponents === 1 ? '' : 's'}.`);
     worker.postMessage({ type: 'result', id: job.id, warnings: built.warnings, stats, timings: { imageMs, reductionMs, extractionMs, orderingMs, movementMs, gcodeMs: 0, statisticsMs, totalMs: performance.now() - started, pathCount: toolpath.paths.length, pointCount, movementCount, gcodeCharacters: 0, packedMovementBytes: packedBytes, transferBytes: processedPreviewBytes }, sentAt: performance.timeOrigin + performance.now() } satisfies JobResult);
   } catch (error) {
     worker.postMessage({ type: 'error', id: job.id, stage: 'run', message: error instanceof Error ? error.message : 'Toolpath processing failed.' } satisfies JobError);
