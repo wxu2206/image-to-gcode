@@ -4,7 +4,7 @@ import type { ConversionMode, Settings } from './types';
 export type ComplexityLevel = 'normal' | 'large' | 'very-large' | 'extreme';
 export type ComplexityEstimate = { samples: number; scanlines: number; movements: number; level: ComplexityLevel; recommendedDetail: number };
 
-const classify = (movements: number): ComplexityLevel => movements > 250_000 ? 'extreme' : movements > 200_000 ? 'very-large' : movements > 100_000 ? 'large' : 'normal';
+export const classifyMovementCount = (movements: number): ComplexityLevel => movements > 250_000 ? 'extreme' : movements > 200_000 ? 'very-large' : movements > 100_000 ? 'large' : 'normal';
 
 /** Cheap upper-bound estimate used to guard automatic processing, not machine capability. */
 export function estimateComplexity(source: { width: number; height: number }, settings: Pick<Settings, 'outputWidth' | 'outputHeight' | 'toolpathDetail' | 'units' | 'lineSpacing' | 'passes'>, mode: ConversionMode): ComplexityEstimate {
@@ -26,5 +26,5 @@ export function estimateComplexity(source: { width: number; height: number }, se
     if (candidateMoves <= 150_000) break;
     recommendedDetail = Math.round((recommendedDetail + .05) * 100) / 100;
   }
-  return { samples, scanlines, movements, level: classify(movements), recommendedDetail };
+  return { samples, scanlines, movements, level: classifyMovementCount(movements), recommendedDetail };
 }

@@ -18,6 +18,26 @@ export type ToolpathStats = {
   time: number;
   estimate: RuntimeEstimate;
   bounds: { minX: number; maxX: number; minY: number; maxY: number; minZ: number | null; maxZ: number | null } | null;
+  /** Compact canonical diagnostics calculated in the worker's existing statistics pass. */
+  diagnostics: {
+    start: Point | null;
+    end: Point | null;
+    nonFiniteCoordinateCount: number;
+    invalidFeedCount: number;
+    zeroLengthMoveCount: number;
+    discontinuityCount: number;
+    invalidStateCount: number;
+    unsafeCncRapidCount: number;
+    missingCncWorkingZCount: number;
+    minWorkingZ: number | null;
+    maxWorkingZ: number | null;
+  };
+};
+
+export type StatisticsSafetyContext = {
+  machineKind: MachineProfile['kind'];
+  safeZ: number;
+  precision: number;
 };
 
 function format(value: number, precision: number): string {
@@ -247,7 +267,11 @@ export function generate(toolpath: Toolpath, settings: Settings, profile: Machin
   return { code: serializeProgram(program, settings, profile, onProgress), moves, warnings };
 }
 
-export function statistics(moves: Move[], onProgress?: (completed: number, total: number) => void): ToolpathStats {
+export function statistics(
+  moves: Move[],
+  onProgress?: (completed: number, total: number) => void,
+  safety?: StatisticsSafetyContext,
+): ToolpathStats {
   let work = 0;
   let travel = 0;
   let working = 0;
@@ -265,6 +289,26 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
   let maxZ = -Infinity;
   let hasCoordinates = false;
   let hasZ = false;
+  let nonFiniteCoordinateCount = 0;
+  let invalidFeedCount = 0;
+  let zeroLengthMoveCount = 0;
+  let discontinuityCount = 0;
+  let invalidStateCount = 0;
+  let unsafeCncRapidCount = 0;
+  let missingCncWorkingZCount = 0;
+  let minWorkingZ = Infinity;
+  let maxWorkingZ = -Infinity;
+  let hasWorkingZ = false;
+
+  const finitePoint = (point: Point) => Number.isFinite(point.x)
+    && Number.isFinite(point.y)
+    && (point.z === undefined || Number.isFinite(point.z));
+  const copyPoint = (point: Point): Point => ({ x: point.x, y: point.y, ...(point.z === undefined ? {} : { z: point.z }) });
+  const start = moves.length > 0 && finitePoint(moves[0].from) ? copyPoint(moves[0].from) : null;
+  const end = moves.length > 0 && finitePoint(moves[moves.length - 1].to) ? copyPoint(moves[moves.length - 1].to) : null;
+  const safeZTolerance = safety && Number.isInteger(safety.precision) && safety.precision >= 0
+    ? 0.5 * 10 ** -safety.precision
+    : 0;
 
   const includePoint = (point: Point) => {
     if (Number.isFinite(point.x) && Number.isFinite(point.y)) {
@@ -283,6 +327,30 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
 
   for (let index = 0; index < moves.length; index += 1) {
     const move = moves[index];
+    if (!finitePoint(move.from) || !finitePoint(move.to)) nonFiniteCoordinateCount += 1;
+    if (!Number.isFinite(move.feed) || (move.feed ?? 0) <= 0) invalidFeedCount += 1;
+    if (index > 0 && !isSamePoint(moves[index - 1].to, move.from)) discontinuityCount += 1;
+    if ((move.working && move.command !== 'G1') || (!move.working && move.command !== 'G0')) invalidStateCount += 1;
+    const deltaX = move.to.x - move.from.x;
+    const deltaY = move.to.y - move.from.y;
+    const deltaZ = (move.to.z ?? 0) - (move.from.z ?? 0);
+    const xyChanges = Number.isFinite(deltaX) && Number.isFinite(deltaY) && (deltaX !== 0 || deltaY !== 0);
+    if (!move.zOnly && deltaX === 0 && deltaY === 0 && deltaZ === 0) zeroLengthMoveCount += 1;
+    if (safety?.machineKind === 'cnc' && move.command === 'G0' && xyChanges) {
+      const atSafeZ = move.from.z !== undefined && move.to.z !== undefined
+        && Number.isFinite(move.from.z) && Number.isFinite(move.to.z)
+        && Math.abs(move.from.z - safety.safeZ) <= safeZTolerance
+        && Math.abs(move.to.z - safety.safeZ) <= safeZTolerance;
+      if (!atSafeZ) unsafeCncRapidCount += 1;
+    }
+    if (safety?.machineKind === 'cnc' && move.working) {
+      if (move.to.z === undefined || !Number.isFinite(move.to.z)) missingCncWorkingZCount += 1;
+      else {
+        minWorkingZ = Math.min(minWorkingZ, move.to.z);
+        maxWorkingZ = Math.max(maxWorkingZ, move.to.z);
+        hasWorkingZ = true;
+      }
+    }
     includePoint(move.from);
     includePoint(move.to);
     const moveDistance = distance(move.from, move.to);
@@ -324,5 +392,18 @@ export function statistics(moves: Move[], onProgress?: (completed: number, total
         maxZ: hasZ ? (maxZ === 0 ? 0 : maxZ) : null,
       }
       : null,
+    diagnostics: {
+      start,
+      end,
+      nonFiniteCoordinateCount,
+      invalidFeedCount,
+      zeroLengthMoveCount,
+      discontinuityCount,
+      invalidStateCount,
+      unsafeCncRapidCount,
+      missingCncWorkingZCount,
+      minWorkingZ: hasWorkingZ ? minWorkingZ : null,
+      maxWorkingZ: hasWorkingZ ? maxWorkingZ : null,
+    },
   };
 }

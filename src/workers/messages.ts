@@ -41,13 +41,30 @@ function validBounds(value: unknown): boolean {
     && ((value.minZ === null && value.maxZ === null) || (finite(value.minZ) && finite(value.maxZ) && value.minZ <= value.maxZ)));
 }
 
+function validDiagnostics(value: unknown): boolean {
+  return record(value)
+    && (value.start === null || validPoint(value.start))
+    && (value.end === null || validPoint(value.end))
+    && integer(value.nonFiniteCoordinateCount)
+    && integer(value.invalidFeedCount)
+    && integer(value.zeroLengthMoveCount)
+    && integer(value.discontinuityCount)
+    && integer(value.invalidStateCount)
+    && integer(value.unsafeCncRapidCount)
+    && integer(value.missingCncWorkingZCount)
+    && (value.minWorkingZ === null || finite(value.minWorkingZ))
+    && (value.maxWorkingZ === null || finite(value.maxWorkingZ))
+    && ((value.minWorkingZ === null && value.maxWorkingZ === null)
+      || (finite(value.minWorkingZ) && finite(value.maxWorkingZ) && value.minWorkingZ <= value.maxWorkingZ));
+}
+
 function validStats(value: unknown): value is ToolpathStats {
   if (!(record(value)
     && nonNegative(value.work) && nonNegative(value.travel) && nonNegative(value.total)
     && integer(value.movementCount) && integer(value.working) && integer(value.travels) && integer(value.toolLifts) && nonNegative(value.travelEfficiency) && value.travelEfficiency <= 1
     && nonNegative(value.time) && record(value.estimate)
     && nonNegative(value.estimate.totalMinutes) && nonNegative(value.estimate.workMinutes) && nonNegative(value.estimate.travelMinutes)
-    && validBounds(value.bounds))) return false;
+    && validBounds(value.bounds) && validDiagnostics(value.diagnostics))) return false;
   return Math.abs(value.total - (value.work + value.travel)) <= 1e-8 * Math.max(1, value.total)
     && value.movementCount === value.working + value.travels
     && Math.abs(value.time - value.estimate.totalMinutes) <= 1e-8 * Math.max(1, value.time)

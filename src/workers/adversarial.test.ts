@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildExportReview } from '../core/exportReview';
+import { buildPreflight } from '../core/exportReview';
 import { statistics } from '../core/gcode';
 import { defaults, profiles } from '../core/machine';
 import type { Move } from '../core/types';
@@ -42,7 +42,7 @@ describe('packed movement integrity', () => {
     expect(previewMaxX).toBeLessThanOrEqual(1);
     expect(canonical.bounds?.maxX).toBe(1_000);
     const settings = { ...defaults, workWidth: 10, workHeight: 10, outputWidth: 5, outputHeight: 5 };
-    expect(buildExportReview({ settings, stats: canonical, profile: profiles[1], warnings: [], placementPending: false, current: true }).level).toBe('blocking');
+    expect(buildPreflight({ settings, stats: canonical, pathCount: 1, profile: profiles[1], warnings: [], placementPending: false, current: true }).status).toBe('blocked');
   });
 });
 
@@ -75,5 +75,17 @@ describe('worker message trust boundary', () => {
     expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, code: 'G90\n', characters: 999, lines: 1 })).toBe(false);
     expect(isWorkerMessage({ type: 'processed-preview-result', id: 1, preview: { width: 2, height: 1, data: new Uint8Array([0]).buffer } })).toBe(false);
     expect(isWorkerMessage({ type: 'error', id: 1, stage: 'other', message: 'bad' })).toBe(false);
+  });
+
+  it('accepts compact canonical diagnostics and rejects malformed diagnostic counts', () => {
+    const stats = statistics([{ command: 'G0', from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, working: false, feed: 100 }]);
+    const timings = {
+      imageMs: 1, reductionMs: 1, extractionMs: 1, orderingMs: 1, movementMs: 1,
+      gcodeMs: 0, statisticsMs: 1, totalMs: 6, pathCount: 1, pointCount: 2,
+      movementCount: 1, gcodeCharacters: 0, packedMovementBytes: 64, transferBytes: 1,
+    };
+    const message = { type: 'result', id: 1, warnings: [], stats, timings, sentAt: 1 };
+    expect(isWorkerMessage(message)).toBe(true);
+    expect(isWorkerMessage({ ...message, stats: { ...stats, diagnostics: { ...stats.diagnostics, invalidFeedCount: -1 } } })).toBe(false);
   });
 });

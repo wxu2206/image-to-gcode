@@ -90,7 +90,11 @@ function run(job: RunJobRequest) {
     const built = buildMovements(toolpath, job.settings, job.profile, (stage, done, total) => report(stage, done, total));
     const movementMs = performance.now() - movementStart;
     const statisticsStart = performance.now();
-    const stats = statistics(built.moves, (done, total) => report('statistics', done, total));
+    const stats = statistics(
+      built.moves,
+      (done, total) => report('statistics', done, total),
+      { machineKind: job.profile.kind, safeZ: job.settings.safeZ, precision: job.settings.precision },
+    );
     const statisticsMs = performance.now() - statisticsStart;
     report('statistics', 1, 1);
     const packed = packMoves(built.moves);

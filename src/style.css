@@ -861,14 +861,81 @@ pre i {
   background: #122019;
 }
 
-.review-status.warning {
+.review-status.warnings {
   border-color: var(--warning);
   background: #282116;
 }
 
-.review-status.blocking {
+.review-status.blocked {
   border-color: #ff7d66;
   background: #321d1b;
+}
+
+.preflight-compact {
+  color: #8491a1;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.preflight-compact.passed {
+  color: #8dddb7;
+}
+
+.preflight-compact.warnings {
+  color: #ffc978;
+}
+
+.preflight-compact.blocked {
+  color: #ff9b89;
+}
+
+.preflight-checks {
+  display: grid;
+  gap: 4px;
+  max-height: 280px;
+  margin: 0 0 12px;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.preflight-checks li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border-left: 2px solid #34414d;
+  background: #12171d;
+  color: #93a1af;
+  font-size: 11px;
+}
+
+.preflight-checks li.warning {
+  border-color: var(--warning);
+  color: #ffd6ae;
+  background: #251e16;
+}
+
+.preflight-checks li.blocking {
+  border-color: #ff7d66;
+  color: #ffc0b5;
+  background: #291a19;
+}
+
+.preflight-checks svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.preflight-checks p {
+  margin: 3px 0 0;
+  line-height: 1.4;
+}
+
+.check-severity {
+  font-size: 9px;
+  letter-spacing: .45px;
+  text-transform: uppercase;
 }
 
 .review-grid {
@@ -902,20 +969,16 @@ pre i {
   margin-bottom: 12px;
 }
 
-.review-messages {
-  margin-top: 12px;
-  padding: 8px 10px;
-  border: 1px solid #70462e;
-  background: #2b2018;
-  color: #ffd6ae;
+.preflight-runtime-note,
+.preflight-disclaimer {
+  margin: 10px 0 0;
+  color: #8491a1;
+  font-size: 10px;
+  line-height: 1.45;
 }
 
-.review-messages p {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  margin: 4px 0;
-  font-size: 11px;
+.preflight-disclaimer {
+  color: #aab5c1;
 }
 
 .review-actions {
