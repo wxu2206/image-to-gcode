@@ -18,7 +18,7 @@ export const defaults: Settings = {
   lockAspect: true, offsetX: 0, offsetY: 0, rotationDeg: 0, origin: 'bottom-left',
   invertX: false, invertY: false, feed: 600, travel: 1800, safeZ: 5, workZ: -1,
   maxDepth: -2, passes: 1, lineSpacing: 0.5, precision: 3, threshold: 128,
-  serpentine: true, simplify: 1, toolpathDetail: 0.3, previewQuality: 'balanced',
+  serpentine: true, simplify: 1, toolpathDetail: 0.3, noiseCleanup: 'light', previewQuality: 'balanced',
   brightness: 0, contrast: 0, invert: false, filter: 'grayscale', fit: true,
 };
 
@@ -70,7 +70,8 @@ export const loadSettings = (): Settings => {
       threshold: bounded(parsed.threshold, defaults.threshold, 0, 255),
       serpentine: flag(parsed.serpentine, defaults.serpentine),
       simplify: bounded(parsed.simplify, defaults.simplify, 0, MAX_DIMENSION),
-      toolpathDetail: bounded(parsed.toolpathDetail, defaults.toolpathDetail, 0.05, 5),
+      toolpathDetail: bounded(parsed.toolpathDetail, defaults.toolpathDetail, 0.025, 2),
+      noiseCleanup: oneOf(parsed.noiseCleanup, ['off', 'light', 'normal', 'strong'], defaults.noiseCleanup),
       previewQuality: oneOf(parsed.previewQuality, ['low', 'balanced', 'high', 'full'], defaults.previewQuality),
       brightness: bounded(parsed.brightness, defaults.brightness, -255, 255),
       contrast: bounded(parsed.contrast, defaults.contrast, -100, 100),
@@ -159,7 +160,8 @@ export function configurationErrors(settings: Settings, kind: MachineProfile['ki
   }
   if (settings.passes < 1 || settings.passes > MAX_PASSES || !Number.isInteger(settings.passes)) errors.push(`Pass count must be an integer from 1 to ${MAX_PASSES}.`);
   if (settings.lineSpacing <= 0 || settings.lineSpacing > MAX_DIMENSION) errors.push('Line spacing must be positive and reasonably bounded.');
-  if (settings.toolpathDetail < 0.05 || settings.toolpathDetail > 5) errors.push('Toolpath detail must be between 0.05 mm and 5 mm.');
+  if (settings.toolpathDetail < 0.025 || settings.toolpathDetail > 2) errors.push('Toolpath detail must be between 0.025 mm and 2 mm.');
+  if (!['off', 'light', 'normal', 'strong'].includes(settings.noiseCleanup)) errors.push('Configuration contains an unknown noise cleanup level.');
   if (settings.precision < 0 || settings.precision > 8 || !Number.isInteger(settings.precision)) errors.push('Precision must be an integer from 0 to 8.');
   if (settings.threshold < 0 || settings.threshold > 255) errors.push('Threshold must be between 0 and 255.');
   if (settings.simplify < 0 || settings.simplify > MAX_DIMENSION) errors.push('Simplification must be finite, non-negative, and reasonably bounded.');

@@ -278,7 +278,7 @@ describe('configuration and revision integrity', () => {
     const changes: Array<Partial<Settings>> = [
       { outputWidth: 11 }, { offsetX: 11 }, { rotationDeg: 17 }, { origin: 'center' },
       { invertX: true }, { feed: 601 }, { safeZ: 6 }, { passes: 2 },
-      { threshold: 129 }, { serpentine: false }, { toolpathDetail: 0.4 },
+      { threshold: 129 }, { serpentine: false }, { toolpathDetail: 0.4 }, { noiseCleanup: 'strong' },
       { brightness: 1 }, { filter: 'edge' }, { units: 'in' },
     ];
     for (const change of changes) expect(canonicalJobKey(1, { ...base, ...change }, profiles[0], 'raster')).not.toBe(original);

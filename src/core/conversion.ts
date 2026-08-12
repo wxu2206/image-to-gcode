@@ -2,9 +2,11 @@ import type { GrayImage } from './image';
 import type { ConversionMode, Path, Point, Settings, Toolpath } from './types';
 import { distance, simplify } from './geometry';
 import { detailInOutputUnits } from './detail';
+import { optimizeToolpath } from './optimize';
 
 const point = (x: number, y: number): Point => ({ x, y });
 const rasterCoordinate = (index: number, size: number) => size === 1 ? 0.5 : index * size / (size - 1);
+const MAX_CONTOUR_EDGES = 1_500_000;
 export type ConversionSettings = Pick<Settings, 'lineSpacing' | 'outputWidth' | 'outputHeight' | 'threshold' | 'serpentine' | 'simplify' | 'toolpathDetail' | 'units'>;
 export type ConversionStage = 'extract' | 'order';
 export type ConversionProgress = (stage: ConversionStage, completed: number, total: number) => void;
@@ -128,6 +130,9 @@ export function contour(image: GrayImage, settings: ConversionSettings, onProgre
     }
     if (y % 8 === 0) onProgress?.('extract', y, image.height * 2);
   }
+  if (edgeCount > MAX_CONTOUR_EDGES) {
+    throw new Error('Contour detail would create too many boundary segments to process safely. Increase Toolpath Detail or use a simpler image.');
+  }
 
   const takeNext = (from: number): number | undefined => {
     const edges = outgoing.get(from);
@@ -171,8 +176,10 @@ export function contour(image: GrayImage, settings: ConversionSettings, onProgre
     }
   }
   onProgress?.('extract', image.height + edgeCount, image.height + edgeCount);
-  return { paths: orderPaths(paths, onProgress), width: image.width, height: image.height, mode: 'contour' };
+  return optimizeToolpath({ paths: orderPaths(paths, onProgress), width: image.width, height: image.height, mode: 'contour' }, settings).toolpath;
 }
 
-export const convert = (image: GrayImage, settings: ConversionSettings, mode: ConversionMode, onProgress?: ConversionProgress) =>
-  mode === 'contour' ? contour(image, settings, onProgress) : raster(image, settings, mode, onProgress);
+export const convert = (image: GrayImage, settings: ConversionSettings, mode: ConversionMode, onProgress?: ConversionProgress) => {
+  const toolpath = mode === 'contour' ? contour(image, settings, onProgress) : raster(image, settings, mode, onProgress);
+  return mode === 'contour' ? toolpath : optimizeToolpath(toolpath, settings).toolpath;
+};

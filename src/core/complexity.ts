@@ -13,14 +13,14 @@ export function estimateComplexity(source: { width: number; height: number }, se
   const samples = resolution.width * resolution.height;
   const passMultiplier = Number.isInteger(settings.passes) && settings.passes > 0 ? settings.passes : 1;
   const baseMovements = mode === 'contour'
-    ? Math.min(samples * 2, 500_000)
+    ? Math.min(samples * 4, 3_500_000)
     : Math.min(samples, resolution.width * scanlines) + scanlines;
   const movements = baseMovements * passMultiplier;
   let recommendedDetail = Math.max(.3, settings.toolpathDetail);
   while (recommendedDetail < 5) {
     const candidate = detailResolution(source, { ...settings, toolpathDetail: recommendedDetail });
     const candidateBase = mode === 'contour'
-      ? Math.min(candidate.width * candidate.height * 2, 500_000)
+      ? Math.min(candidate.width * candidate.height * 4, 3_500_000)
       : Math.min(candidate.width * scanlines, candidate.width * candidate.height) + scanlines;
     const candidateMoves = candidateBase * passMultiplier;
     if (candidateMoves <= 150_000) break;
