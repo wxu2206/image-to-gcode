@@ -152,5 +152,6 @@ describe('G-code generation', () => {
     const summary = statistics([{ command: 'G0', from: { x: Number.NaN, y: 0 }, to: { x: Infinity, y: 1 }, working: false, feed: 100 }]);
     expect(summary.bounds).toBeNull();
     expect(summary.total).toBe(0);
+    expect(summary.diagnostics).toMatchObject({ start: null, end: null, nonFiniteCoordinateCount: 1 });
   });
 });

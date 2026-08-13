@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildExportReview } from './exportReview';
+import { buildPreflight } from './exportReview';
 import { distance, machinePoint, scaleToOutput } from './geometry';
 import { buildMovements, generate, statistics } from './gcode';
 import { canonicalJobKey, isCurrentJobRevision, isCurrentRevision } from './jobRevision';
@@ -96,7 +96,7 @@ describe('canonical precision and bounds', () => {
     expect(summary.bounds?.maxX).toBe(2);
     expect(generated.code).toContain('X2 Y1');
     expect(generated.warnings.some((warning) => warning.includes('outside work area'))).toBe(true);
-    expect(buildExportReview({ settings, stats: summary, profile: profiles[1], warnings: generated.warnings, placementPending: false, current: true }).level).toBe('blocking');
+    expect(buildPreflight({ settings, stats: summary, pathCount: 1, profile: profiles[1], warnings: generated.warnings, placementPending: false, current: true }).status).toBe('blocked');
   });
 
   it('never serializes negative zero', () => {
@@ -210,9 +210,20 @@ describe('machine-control state sequencing', () => {
   });
 
   it('handles empty, single zero-length, and Z-less statistics without invented extrema', () => {
-    expect(statistics([])).toMatchObject({ movementCount: 0, work: 0, travel: 0, time: 0, bounds: null });
+    expect(statistics([])).toMatchObject({ movementCount: 0, work: 0, travel: 0, time: 0, bounds: null, diagnostics: { start: null, end: null } });
     const single = statistics([{ command: 'G1', from: { x: 2, y: 3 }, to: { x: 2, y: 3 }, working: true, feed: 100 }]);
-    expect(single).toMatchObject({ movementCount: 1, working: 1, work: 0, time: 0, bounds: { minX: 2, maxX: 2, minY: 3, maxY: 3, minZ: null, maxZ: null } });
+    expect(single).toMatchObject({ movementCount: 1, working: 1, work: 0, time: 0, bounds: { minX: 2, maxX: 2, minY: 3, maxY: 3, minZ: null, maxZ: null }, diagnostics: { start: { x: 2, y: 3 }, end: { x: 2, y: 3 }, zeroLengthMoveCount: 1 } });
+  });
+
+  it('collects canonical safety diagnostics in the same one-pass statistics scan', () => {
+    const summary = statistics([
+      { command: 'G0', from: { x: 0, y: 0, z: 0 }, to: { x: 1, y: 0, z: 0 }, working: true, feed: 0 },
+      { command: 'G1', from: { x: 2, y: 0, z: 0 }, to: { x: 3, y: 0, z: 0 }, working: false, feed: 100 },
+    ], undefined, { machineKind: 'cnc', safeZ: 5, precision: 3 });
+    expect(summary.diagnostics).toMatchObject({
+      start: { x: 0, y: 0, z: 0 }, end: { x: 3, y: 0, z: 0 },
+      invalidFeedCount: 1, discontinuityCount: 1, invalidStateCount: 2, unsafeCncRapidCount: 1,
+    });
   });
 
   it('counts contour closure and scales working distance geometrically', () => {
