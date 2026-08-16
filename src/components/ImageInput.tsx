@@ -39,7 +39,7 @@ export function ImageInput({ onFile, variant, children }: ImageInputProps) {
     dragDepth.current = 0;
     if (files.length !== 1) {
       setBusy(false);
-      setError('Choose exactly one image at a time.');
+      setError('Choose exactly one image or SVG at a time.');
       return;
     }
     const file = files[0];
@@ -49,7 +49,7 @@ export function ImageInput({ onFile, variant, children }: ImageInputProps) {
       setError(null);
       await onFile(file);
     } catch (reason) {
-      if (requestId === acceptRequest.current) setError(reason instanceof Error ? reason.message : 'The image could not be loaded.');
+      if (requestId === acceptRequest.current) setError(reason instanceof Error ? reason.message : 'The image or SVG could not be loaded.');
     } finally {
       if (requestId === acceptRequest.current) setBusy(false);
     }
@@ -78,10 +78,10 @@ export function ImageInput({ onFile, variant, children }: ImageInputProps) {
     void accept(event.dataTransfer.files);
   };
 
-  const input = <input ref={inputRef} aria-label="Choose image" type="file" accept="image/png,image/jpeg,image/webp,.jpg,.jpeg" onChange={onChange} disabled={busy}/>;
-  if (variant === 'toolbar') return <div className="image-input"><label className="upload" aria-busy={busy}><Upload size={16}/>{busy ? 'Loading…' : 'Import image'}{input}</label>{error&&<span className="upload-error" role="alert">{error}</span>}</div>;
+  const input = <input ref={inputRef} aria-label="Choose image or SVG" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,.jpg,.jpeg,.svg" onChange={onChange} disabled={busy}/>;
+  if (variant === 'toolbar') return <div className="image-input"><label className="upload" aria-busy={busy}><Upload size={16}/>{busy ? 'Loading…' : 'Import source'}{input}</label>{error&&<span className="upload-error" role="alert">{error}</span>}</div>;
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inputRef.current?.click(); }
   };
-  return <div className="drop-container"><div role="button" tabIndex={0} className={`drop ${dragActive ? 'drag-active' : ''} ${children ? 'has-content' : ''}`} onClick={(event)=>{if(event.target!==inputRef.current)inputRef.current?.click()}} onKeyDown={onKeyDown} onDragEnter={onDragEnter} onDragOver={(event)=>event.preventDefault()} onDragLeave={onDragLeave} onDrop={onDrop} aria-busy={busy}>{children ?? <><Upload size={34}/><b>{busy ? 'Loading image…' : 'Drop an image or click to browse'}</b><span>PNG, JPEG, or WebP — processed entirely in your browser</span></>}{input}</div>{error&&<span className="drop-error" role="alert">{error}</span>}</div>;
+  return <div className="drop-container"><div role="button" tabIndex={0} className={`drop ${dragActive ? 'drag-active' : ''} ${children ? 'has-content' : ''}`} onClick={(event)=>{if(event.target!==inputRef.current)inputRef.current?.click()}} onKeyDown={onKeyDown} onDragEnter={onDragEnter} onDragOver={(event)=>event.preventDefault()} onDragLeave={onDragLeave} onDrop={onDrop} aria-busy={busy}>{children ?? <><Upload size={34}/><b>{busy ? 'Loading file…' : 'Drop an image or SVG, or click to browse'}</b><span>PNG, JPEG, WebP, or SVG — processed entirely in your browser</span></>}{input}</div>{error&&<span className="drop-error" role="alert">{error}</span>}</div>;
 }

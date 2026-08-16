@@ -83,6 +83,7 @@ describe('worker message trust boundary', () => {
       imageMs: 1, reductionMs: 1, extractionMs: 1, orderingMs: 1, movementMs: 1,
       gcodeMs: 0, statisticsMs: 1, totalMs: 6, pathCount: 1, pointCount: 2,
       movementCount: 1, gcodeCharacters: 0, packedMovementBytes: 64, transferBytes: 1,
+      sourceSegmentCount: 0, flattenedPointCount: 0,
     };
     const message = { type: 'result', id: 1, warnings: [], stats, timings, sentAt: 1 };
     expect(isWorkerMessage(message)).toBe(true);

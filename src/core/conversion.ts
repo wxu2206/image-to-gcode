@@ -65,7 +65,7 @@ export function orderPaths(paths: Path[], onProgress?: ConversionProgress): Path
   return result;
 }
 
-export function raster(image: GrayImage, settings: ConversionSettings, mode: ConversionMode = 'raster', onProgress?: ConversionProgress): Toolpath {
+export function raster(image: GrayImage, settings: ConversionSettings, mode: Exclude<ConversionMode, 'vector'> = 'raster', onProgress?: ConversionProgress): Toolpath {
   assertConversionInput(image, settings);
   const paths: Path[] = [];
   const step = Math.max(1, Math.round(settings.lineSpacing / settings.outputHeight * image.height));
@@ -179,7 +179,7 @@ export function contour(image: GrayImage, settings: ConversionSettings, onProgre
   return optimizeToolpath({ paths: orderPaths(paths, onProgress), width: image.width, height: image.height, mode: 'contour' }, settings).toolpath;
 }
 
-export const convert = (image: GrayImage, settings: ConversionSettings, mode: ConversionMode, onProgress?: ConversionProgress) => {
+export const convert = (image: GrayImage, settings: ConversionSettings, mode: Exclude<ConversionMode, 'vector'>, onProgress?: ConversionProgress) => {
   const toolpath = mode === 'contour' ? contour(image, settings, onProgress) : raster(image, settings, mode, onProgress);
   return mode === 'contour' ? toolpath : optimizeToolpath(toolpath, settings).toolpath;
 };

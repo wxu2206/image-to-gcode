@@ -140,6 +140,14 @@ header {
   white-space: nowrap;
 }
 
+.vector-badge {
+  padding: 1px 5px;
+  border: 1px solid #466473;
+  color: #8fc9d9;
+  font: 600 9px/1.3 var(--font-mono);
+  letter-spacing: .08em;
+}
+
 .preview-tools,
 .preview-modes,
 .playback-controls,

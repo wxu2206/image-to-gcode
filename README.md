@@ -2,14 +2,14 @@
 
 > **Beta:** The main features are working, but bugs, incomplete areas, and performance issues should still be expected.
 
-A browser-based image-to-G-code utility for CNC routers, pen plotters, and generic XY laser-style machines. Images remain local to the browser; there is no account or backend.
+A browser-based image/vector-to-G-code utility for CNC routers, pen plotters, and generic XY laser-style machines. Sources remain local to the browser; there is no account or backend.
 
 Try it online: https://imagetogcode.ca/
 
 ## Features
 
-* PNG, JPEG, and WebP import with drag/drop
-* Raster scanline, contour/outline, and grayscale engraving conversions
+* PNG, JPEG, WebP, and native SVG import with drag/drop
+* Raster scanline, contour/outline, grayscale engraving, and SVG centerline conversion
 * Interactive 2D toolpath preview with work-area boundary, travel vs working moves, zoom, and playback
 * Configurable dimensions, origins, offsets, axis inversion, feeds, Z depths, passes, scan spacing, and image filters
 * Editable/persisted machine profiles for generic CNC, pen, and laser-style workflows
@@ -27,7 +27,15 @@ Run quality checks with `npm test`, `npm run typecheck`, `npm run lint`, and cre
 
 ## Architecture
 
-`src/core/image.ts` processes pixels, `conversion.ts` converts processed images to typed geometry, `geometry.ts` performs coordinate transforms, and `gcode.ts` serializes typed moves to machine commands. React UI code in `main.tsx` only orchestrates state and rendering.
+`src/core/image.ts` processes raster pixels and `conversion.ts` converts them to typed geometry. Native SVG follows a separate secure path: `src/vector/parseSvg.ts` copies supported XML geometry into a DOM-free typed model, then `flatten.ts` adaptively converts curves using the physical Toolpath Detail tolerance in the worker. Both sources then share toolpath optimization, packed canonical movements, coordinate transforms, statistics, preflight, preview, and the `core/gcode.ts` serializer. React UI code orchestrates state and rendering; uploaded source data is not persisted.
+
+### Native SVG support
+
+SVG import supports paths (`M/L/H/V/C/S/Q/T/A/Z`, absolute and relative), lines, polylines, polygons, rectangles including rounded corners, circles, ellipses, groups, nested transforms, common `viewBox`/`preserveAspectRatio` behavior, and unitless/px/mm/cm/in/pt/pc dimensions. Stroke geometry is plotted as its centerline. Fill-only geometry is imported as an outline with a visible warning; fills are not hatched.
+
+SVG is treated as untrusted input. Markup is never injected into the page. Scripts, event handlers, external resources and URLs, stylesheets, images, `foreignObject`, text, `use`/`symbol`, clipping, masks, filters, patterns, and gradients are ignored with deduplicated warnings where encountered. File, XML-node, nesting, path-command, parsed-segment, and flattened-point limits bound processing. SVG support is intentionally a practical geometry subset, not full SVG specification compatibility.
+
+Transform order is SVG local geometry → nested SVG/group affine transforms → root `viewBox` mapping → physical output scaling → app placement/rotation → machine origin and axis inversion. For SVG, Toolpath Detail is the maximum adaptive curve-flattening deviation in millimetres; it does not invoke raster resampling.
 
 ## Development
 
@@ -43,7 +51,7 @@ Profiles intentionally do not assume spindle, laser, servo, or homing commands. 
 
 ## Limitations and roadmap
 
-Contour extraction is intentionally lightweight pixel-boundary tracing; future work could add connected contour following, SVG import/export, rotary support, and richer machine post-processors. Performance and secondary features are still being improved during beta.
+SVG text-to-outline conversion, fill hatching, CSS styling, clipping, masks, filters, gradients, referenced symbols, and external resources are not supported. SVG stroke width is retained only as metadata and does not offset centerlines. Other future work could include SVG export, rotary support, and richer machine post-processors. Performance and secondary features are still being improved during beta.
 
 ## Contributing
 

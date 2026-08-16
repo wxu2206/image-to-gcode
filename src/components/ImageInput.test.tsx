@@ -12,8 +12,23 @@ describe('ImageInput', () => {
   ])('accepts a valid %s file from the picker', async (_format, selected) => {
     const onFile = vi.fn().mockResolvedValue(undefined);
     render(<ImageInput variant="toolbar" onFile={onFile}/>);
-    fireEvent.change(screen.getByLabelText('Choose image'), { target: { files: [selected] } });
+    fireEvent.change(screen.getByLabelText('Choose image or SVG'), { target: { files: [selected] } });
     await waitFor(() => expect(onFile).toHaveBeenCalledWith(selected));
+  });
+
+  it('accepts SVG from the picker and drag-and-drop path', async () => {
+    const onFile = vi.fn().mockResolvedValue(undefined);
+    const selected = file('vector icon [final] ü.svg', 'image/svg+xml');
+    const { unmount } = render(<ImageInput variant="toolbar" onFile={onFile}/>);
+    fireEvent.change(screen.getByLabelText('Choose image or SVG'), { target: { files: [selected] } });
+    await waitFor(() => expect(onFile).toHaveBeenCalledWith(selected));
+    unmount();
+    render(<ImageInput variant="dropzone" onFile={onFile}/>);
+    const zone = screen.getByRole('button', { name: /drop an image or SVG/i });
+    fireEvent.dragEnter(zone, { dataTransfer: { files: [selected], items: [{ type: selected.type }], types: ['Files'] } });
+    expect(zone.classList.contains('drag-active')).toBe(true);
+    fireEvent.drop(zone, { dataTransfer: { files: [selected], items: [{ type: selected.type }], types: ['Files'] } });
+    await waitFor(() => expect(onFile).toHaveBeenCalledTimes(2));
   });
 
   it('accepts one supported drag-and-drop file', async () => {
@@ -30,7 +45,7 @@ describe('ImageInput', () => {
 
   it('opens the file picker when the visible drop area is clicked', () => {
     render(<ImageInput variant="dropzone" onFile={vi.fn().mockResolvedValue(undefined)}/>);
-    const input = screen.getByLabelText('Choose image');
+    const input = screen.getByLabelText('Choose image or SVG');
     const click = vi.spyOn(input, 'click');
     fireEvent.click(screen.getByRole('button', { name: /drop an image/i }));
     expect(click).toHaveBeenCalledOnce();
@@ -39,9 +54,9 @@ describe('ImageInput', () => {
   it('rejects unsupported and multiple files with useful errors', async () => {
     const onFile = vi.fn().mockResolvedValue(undefined);
     render(<ImageInput variant="dropzone" onFile={onFile}/>);
-    const input = screen.getByLabelText('Choose image');
+    const input = screen.getByLabelText('Choose image or SVG');
     fireEvent.change(input, { target: { files: [file('notes.txt', 'text/plain')] } });
-    expect((await screen.findByRole('alert')).textContent).toContain('PNG, JPEG, or WebP');
+    expect((await screen.findByRole('alert')).textContent).toContain('PNG, JPEG, WebP, or SVG');
     fireEvent.change(input, { target: { files: [file('one.png', 'image/png'), file('two.png', 'image/png')] } });
     expect((await screen.findByRole('alert')).textContent).toContain('exactly one');
     expect(onFile).not.toHaveBeenCalled();
@@ -50,7 +65,7 @@ describe('ImageInput', () => {
   it('allows replacing an image and selecting the same file again', async () => {
     const onFile = vi.fn().mockResolvedValue(undefined);
     render(<ImageInput variant="toolbar" onFile={onFile}/>);
-    const input = screen.getByLabelText('Choose image');
+    const input = screen.getByLabelText('Choose image or SVG');
     const first = file('same.png', 'image/png');
     const second = file('replacement.jpg', 'image/jpeg');
     fireEvent.change(input, { target: { files: [first] } });
@@ -65,7 +80,7 @@ describe('ImageInput', () => {
   it('recovers after a decoding failure', async () => {
     const onFile = vi.fn().mockRejectedValueOnce(new Error('Image decoding failed.')).mockResolvedValueOnce(undefined);
     render(<ImageInput variant="toolbar" onFile={onFile}/>);
-    const input = screen.getByLabelText('Choose image');
+    const input = screen.getByLabelText('Choose image or SVG');
     fireEvent.change(input, { target: { files: [file('broken.png', 'image/png')] } });
     expect((await screen.findByRole('alert')).textContent).toContain('Image decoding failed.');
     fireEvent.change(input, { target: { files: [file('good.png', 'image/png')] } });
@@ -80,7 +95,7 @@ describe('ImageInput', () => {
     const secondRequest = new Promise<void>((resolve) => { resolveSecond = resolve; });
     const onFile = vi.fn().mockReturnValueOnce(firstRequest).mockReturnValueOnce(secondRequest);
     render(<ImageInput variant="toolbar" onFile={onFile}/>);
-    const input = screen.getByLabelText('Choose image');
+    const input = screen.getByLabelText('Choose image or SVG');
     fireEvent.change(input, { target: { files: [file('old.png', 'image/png')] } });
     await waitFor(() => expect(onFile).toHaveBeenCalledTimes(1));
     fireEvent.change(input, { target: { files: [file('new.png', 'image/png')] } });
@@ -89,6 +104,6 @@ describe('ImageInput', () => {
     await Promise.resolve();
     expect(screen.queryByRole('alert')).toBeNull();
     resolveSecond();
-    await waitFor(() => expect(screen.getByText('Import image').closest('label')?.getAttribute('aria-busy')).toBe('false'));
+    await waitFor(() => expect(screen.getByText('Import source').closest('label')?.getAttribute('aria-busy')).toBe('false'));
   });
 });

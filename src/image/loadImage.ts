@@ -1,18 +1,46 @@
-const SUPPORTED_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp']);
-const SUPPORTED_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
+import { SVG_LIMITS } from '../vector/model';
+
+export type SupportedInputKind = 'raster' | 'svg';
+
+const RASTER_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp']);
+const RASTER_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
+const SVG_MIME_TYPES = new Set(['image/svg+xml', 'application/svg+xml']);
 const MAX_IMAGE_FILE_BYTES = 40 * 1024 * 1024;
 const MAX_SOURCE_PIXELS = 48_000_000;
 
-export function isSupportedImageFile(file: Pick<File, 'name' | 'type'>): boolean {
+export function inputFileKind(file: Pick<File, 'name' | 'type'>): SupportedInputKind | null {
   const mime = file.type.toLowerCase();
-  if (mime) return SUPPORTED_MIME_TYPES.has(mime);
   const extension = file.name.split('.').pop()?.toLowerCase();
-  return extension !== undefined && SUPPORTED_EXTENSIONS.has(extension);
+  const genericMime = mime === '' || mime === 'application/octet-stream';
+  if (extension === 'svg') return genericMime || SVG_MIME_TYPES.has(mime) ? 'svg' : null;
+  if (extension && RASTER_EXTENSIONS.has(extension)) return genericMime || RASTER_MIME_TYPES.has(mime) ? 'raster' : null;
+  // A real filename with an unknown extension is not accepted solely because an
+  // untrusted MIME label claims that it is an image.
+  if (extension && file.name.includes('.')) return null;
+  if (SVG_MIME_TYPES.has(mime)) return 'svg';
+  if (RASTER_MIME_TYPES.has(mime)) return 'raster';
+  return null;
+}
+
+export function isSupportedImageFile(file: Pick<File, 'name' | 'type'>): boolean {
+  return inputFileKind(file) !== null;
 }
 
 export function validateImageFile(file: File): void {
-  if (!isSupportedImageFile(file)) throw new Error('Choose one PNG, JPEG, or WebP image.');
-  if (file.size > MAX_IMAGE_FILE_BYTES) throw new Error('Choose an image smaller than 40 MB.');
+  const kind = inputFileKind(file);
+  if (!kind) throw new Error('Choose one PNG, JPEG, WebP, or SVG file.');
+  if (kind === 'svg' && file.size > SVG_LIMITS.maxFileBytes) throw new Error('Choose an SVG smaller than 5 MB.');
+  if (kind === 'raster' && file.size > MAX_IMAGE_FILE_BYTES) throw new Error('Choose an image smaller than 40 MB.');
+}
+
+export async function readSvgFile(file: File): Promise<string> {
+  validateImageFile(file);
+  if (inputFileKind(file) !== 'svg') throw new Error('The selected file is not an SVG.');
+  try {
+    return await file.text();
+  } catch {
+    throw new Error(`Could not read “${file.name}”. Try another SVG.`);
+  }
 }
 
 export function decodeImageFile(file: File): Promise<HTMLImageElement> {

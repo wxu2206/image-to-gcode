@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+  <script>alert('never')</script>
+  <style>@import url(https://example.invalid/style.css);</style>
+  <image href="https://example.invalid/track.png" />
+  <foreignObject><div xmlns="http://www.w3.org/1999/xhtml">unsafe</div></foreignObject>
+  <use href="javascript:alert(1)" />
+  <text x="0" y="10">Convert me to paths</text>
+  <path onclick="alert(1)" fill="none" stroke="black" d="M1 1 L19 19" />
+</svg>
