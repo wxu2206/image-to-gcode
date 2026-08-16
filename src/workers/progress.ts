@@ -25,6 +25,8 @@ export type WorkerTimings = {
   gcodeCharacters: number;
   packedMovementBytes: number;
   transferBytes: number;
+  sourceSegmentCount: number;
+  flattenedPointCount: number;
 };
 
 export type PipelineProgress = {
@@ -50,7 +52,7 @@ const RANGES: Record<WorkerStage, readonly [number, number]> = {
 export const stageLabel: Record<WorkerStage, string> = {
   image: 'Processing image…',
   reduce: 'Reducing to machine resolution…',
-  extract: 'Detecting paths…',
+  extract: 'Extracting geometry…',
   order: 'Ordering paths…',
   movements: 'Building machine movements…',
   gcode: 'Serializing G-code…',

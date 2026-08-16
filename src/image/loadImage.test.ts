@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { convert } from '../core/conversion';
 import { processImage } from '../core/image';
 import { defaults } from '../core/machine';
-import { decodeImageFile, isSupportedImageFile, readImagePixels, validateImageFile } from './loadImage';
+import { decodeImageFile, inputFileKind, isSupportedImageFile, readImagePixels, readSvgFile, validateImageFile } from './loadImage';
 
 const OriginalFileReader = globalThis.FileReader;
 const OriginalImage = globalThis.Image;
@@ -18,13 +18,27 @@ describe('image loading pipeline', () => {
     expect(isSupportedImageFile({ name: 'photo.JPG', type: '' })).toBe(true);
     expect(isSupportedImageFile({ name: 'photo.jpeg', type: 'image/jpeg' })).toBe(true);
     expect(isSupportedImageFile({ name: 'image.webp', type: 'image/webp' })).toBe(true);
+    expect(inputFileKind({ name: 'drawing.SVG', type: '' })).toBe('svg');
+    expect(inputFileKind({ name: 'drawing.svg', type: 'image/svg+xml' })).toBe('svg');
+    expect(inputFileKind({ name: 'no-extension', type: 'image/svg+xml' })).toBe('svg');
     expect(isSupportedImageFile({ name: 'fake.png', type: 'text/plain' })).toBe(false);
+    expect(isSupportedImageFile({ name: 'fake.exe', type: 'image/svg+xml' })).toBe(false);
+    expect(isSupportedImageFile({ name: 'fake.svg', type: 'text/html' })).toBe(false);
   });
 
   it('rejects an otherwise supported file with an unsafe resource size', () => {
     const oversized = new File(['image'], 'large.png', { type: 'image/png' });
     Object.defineProperty(oversized, 'size', { value: 41 * 1024 * 1024 });
     expect(() => validateImageFile(oversized)).toThrow('smaller than 40 MB');
+  });
+
+  it('reads local SVG text and applies the smaller vector upload limit', async () => {
+    const selected = new File(['<svg/>'], 'safe.svg', { type: 'image/svg+xml' });
+    Object.defineProperty(selected, 'text', { value: vi.fn().mockResolvedValue('<svg/>') });
+    await expect(readSvgFile(selected)).resolves.toBe('<svg/>');
+    const oversized = new File(['x'], 'huge.svg', { type: 'image/svg+xml' });
+    Object.defineProperty(oversized, 'size', { value: 5 * 1024 * 1024 + 1 });
+    expect(() => validateImageFile(oversized)).toThrow('smaller than 5 MB');
   });
 
   it('decodes pixels and produces usable conversion geometry', async () => {

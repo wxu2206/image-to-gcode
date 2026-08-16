@@ -1,5 +1,4 @@
 import { distance } from './geometry';
-import { detailInOutputUnits } from './detail';
 import { toMillimetres } from './units';
 import type { Path, Point, Settings, Toolpath } from './types';
 
@@ -80,7 +79,8 @@ function joinCompatible(paths: Path[], tolerance: number, enabled: boolean): { p
     const previous = result[result.length - 1];
     if (previous && previous.kind === 'work' && path.kind === 'work' && !closed(previous, tolerance) && !closed(path, tolerance)
       && samePoint(previous.points[previous.points.length - 1], path.points[0], tolerance)) {
-      previous.points = [...previous.points, ...path.points.slice(1)];
+      const previousEnd = previous.points[previous.points.length - 1];
+      previous.points = [...previous.points, ...(samePoint(previousEnd, path.points[0]) ? path.points.slice(1) : path.points)];
       joins += 1;
     } else result.push({ ...path, points: path.points.slice() });
   }
@@ -90,7 +90,9 @@ function joinCompatible(paths: Path[], tolerance: number, enabled: boolean): { p
 /**
  * Keeps conversion geometry in image coordinates, but derives all physical
  * tolerances from Toolpath Detail. Contours and grayscale paths are never joined:
- * their closure/intensity semantics take priority over eliminating a lift.
+ * their closure/intensity semantics take priority over eliminating a lift. Native
+ * vector centerlines may be joined only when their open endpoints are physically
+ * coincident within the same conservative detail-derived tolerance.
  */
 export function optimizeToolpath(toolpath: Toolpath, settings: Pick<Settings, 'outputWidth' | 'outputHeight' | 'toolpathDetail' | 'units'>): OptimizationResult {
   const work = toolpath.paths.filter((path) => path.kind === 'work' && path.points.length > 1);
@@ -100,10 +102,10 @@ export function optimizeToolpath(toolpath: Toolpath, settings: Pick<Settings, 'o
   // Existing spatial sweep remains the scalable fallback; it has already proven
   // deterministic on 10k-path fixtures.
   const ordered = strategy === 'nearest-local' ? localImprove(nearestOrder(work)) : work;
-  const toleranceMm = Math.max(0.01, detailInOutputUnits(settings) * 0.5);
+  const toleranceMm = Math.max(0.01, settings.toolpathDetail * 0.5);
   const mmPerSource = Math.max(toMillimetres(settings.outputWidth, settings.units) / toolpath.width, toMillimetres(settings.outputHeight, settings.units) / toolpath.height);
   const joinTolerance = toleranceMm / mmPerSource;
-  const joined = joinCompatible(ordered, joinTolerance, toolpath.mode === 'raster');
+  const joined = joinCompatible(ordered, joinTolerance, toolpath.mode === 'raster' || toolpath.mode === 'vector');
   const optimized = { ...toolpath, paths: [...joined.paths, ...other] };
   return { toolpath: optimized, beforeTravel, afterTravel: travelDistance(joined.paths), joins: joined.joins, strategy };
 }

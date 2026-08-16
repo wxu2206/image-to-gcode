@@ -1,7 +1,7 @@
 export type Point = { x: number; y: number; z?: number; intensity?: number };
 export type Path = { id: string; points: Point[]; kind: 'work' | 'travel' };
 export type Toolpath = { paths: Path[]; width: number; height: number; mode: ConversionMode };
-export type ConversionMode = 'raster' | 'contour' | 'grayscale';
+export type ConversionMode = 'raster' | 'contour' | 'grayscale' | 'vector';
 export type Origin = 'bottom-left' | 'top-left' | 'center';
 export type Units = 'mm' | 'in';
 export type PreviewQuality = 'low' | 'balanced' | 'high' | 'full';

@@ -86,6 +86,7 @@ const timingKeys: Array<keyof WorkerTimings> = [
   'imageMs', 'reductionMs', 'extractionMs', 'orderingMs', 'movementMs', 'gcodeMs',
   'statisticsMs', 'totalMs', 'pathCount', 'pointCount', 'movementCount',
   'gcodeCharacters', 'packedMovementBytes', 'transferBytes',
+  'sourceSegmentCount', 'flattenedPointCount',
 ];
 
 function validTimings(value: unknown): value is WorkerTimings {

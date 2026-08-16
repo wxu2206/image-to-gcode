@@ -7,7 +7,7 @@ export type ComplexityEstimate = { samples: number; scanlines: number; movements
 export const classifyMovementCount = (movements: number): ComplexityLevel => movements > 250_000 ? 'extreme' : movements > 200_000 ? 'very-large' : movements > 100_000 ? 'large' : 'normal';
 
 /** Cheap upper-bound estimate used to guard automatic processing, not machine capability. */
-export function estimateComplexity(source: { width: number; height: number }, settings: Pick<Settings, 'outputWidth' | 'outputHeight' | 'toolpathDetail' | 'units' | 'lineSpacing' | 'passes'>, mode: ConversionMode): ComplexityEstimate {
+export function estimateComplexity(source: { width: number; height: number }, settings: Pick<Settings, 'outputWidth' | 'outputHeight' | 'toolpathDetail' | 'units' | 'lineSpacing' | 'passes'>, mode: Exclude<ConversionMode, 'vector'>): ComplexityEstimate {
   const resolution = detailResolution(source, settings);
   const scanlines = Math.ceil(settings.outputHeight / Math.max(.001, settings.lineSpacing));
   const samples = resolution.width * resolution.height;
