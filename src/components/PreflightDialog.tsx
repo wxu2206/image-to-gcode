@@ -2,6 +2,7 @@ import type { KeyboardEvent, RefObject } from 'react';
 import { AlertTriangle, CheckCircle2, CircleX } from 'lucide-react';
 import type { PreflightCheck, PreflightExportAction, PreflightResult } from '../core/exportReview';
 import type { ConversionMode, MachineProfile, Point, Settings } from '../core/types';
+import { getPostProcessor } from '../postprocessors/registry';
 import { formatEstimatedDuration } from '../utils/duration';
 
 export type { PreflightExportAction } from '../core/exportReview';
@@ -50,6 +51,8 @@ export function PreflightDialog({
   onClose,
   onConfirm,
 }: Props) {
+  const processor = getPostProcessor(profile.postProcessorId);
+  const capabilities = processor?.capabilities(profile);
   const trapKeyboard = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -88,7 +91,7 @@ export function PreflightDialog({
         </li>)}
       </ul>
       <div className="review-grid">
-        <section><h3>Machine</h3><p><b>Profile:</b> {profile.name}<br /><b>Work area:</b> {settings.workWidth} × {settings.workHeight} {settings.units}<br /><b>Origin:</b> {settings.origin.replace('-', ' ')}<br /><b>Feed / travel:</b> {settings.feed} / {settings.travel} {settings.units}/min</p>{profile.kind === 'cnc' && <p><b>Safe Z:</b> {settings.safeZ} · <b>Working Z:</b> {settings.workZ}<br /><b>Maximum depth:</b> {settings.maxDepth} · <b>Passes:</b> {settings.passes}</p>}</section>
+        <section><h3>Machine</h3><p><b>Profile:</b> {profile.name}<br /><b>Post-processor:</b> {processor?.name ?? 'Unavailable'}<br /><b>Tool model:</b> {capabilities?.toolStateModel ?? 'Unknown'} · <b>Z motion:</b> {capabilities?.supportsZ ? 'Yes' : 'No'}<br /><b>Work area:</b> {settings.workWidth} × {settings.workHeight} {settings.units}<br /><b>Origin:</b> {settings.origin.replace('-', ' ')}<br /><b>Feed / travel:</b> {settings.feed} / {settings.travel} {settings.units}/min</p>{capabilities?.requiresSafeZ && <p><b>Safe Z:</b> {settings.safeZ} · <b>Working Z:</b> {settings.workZ}<br /><b>Maximum depth:</b> {settings.maxDepth} · <b>Passes:</b> {settings.passes}</p>}</section>
         <section><h3>Canonical job</h3><p><b>Conversion:</b> {mode}<br /><b>Movements:</b> {summary?.movementCount.toLocaleString() ?? '—'} · <b>Paths:</b> {summary?.pathCount.toLocaleString() ?? '—'}<br /><b>Start:</b> {pointText(summary?.start ?? null, settings)}<br /><b>End:</b> {pointText(summary?.end ?? null, settings)}</p></section>
         <section><h3>Estimated output</h3><p><b>Drawing:</b> {summary?.drawingDistance.toFixed(1) ?? '—'} {settings.units}<br /><b>Travel:</b> {summary?.travelDistance.toFixed(1) ?? '—'} {settings.units}<br /><b>Travel efficiency:</b> {summary ? `${Math.round(summary.travelEfficiency * 100)}%` : '—'}<br /><b title="Approximate. Controller acceleration, dwell, and custom commands may change real runtime.">Estimated time:</b> {summary ? formatEstimatedDuration(summary.estimatedMinutes) : '—'}<br /><b>G-code size:</b> {gcodeMegabytes === null ? 'Generated on confirmation' : `${gcodeMegabytes.toFixed(2)} MB`}</p></section>
       </div>

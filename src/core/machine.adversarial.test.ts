@@ -43,9 +43,21 @@ describe('adversarial persisted settings', () => {
       { id: '__proto__', name: '<img src=x onerror=alert(1)>', kind: 'pen', header: '<script>', footer: '', toolOn: 'DOWN', toolOff: 'UP', safeZ: 0, workZ: 0, passDepth: 1, feed: 100, travel: 200 },
     ]));
     const loaded = loadProfiles();
-    expect(loaded.find((profile) => profile.id === 'unsafe')).toMatchObject({ passDepth: 1, feed: defaults.feed, travel: defaults.travel });
-    expect(loaded.find((profile) => profile.id === '__proto__')).toMatchObject({ name: '<img src=x onerror=alert(1)>', header: '<script>' });
+    expect(loaded.find((profile) => profile.id === 'unsafe')).toMatchObject({ passDepth: 1, feed: defaults.feed, travel: defaults.travel, postProcessorId: 'generic' });
+    expect(loaded.find((profile) => profile.id === '__proto__')).toMatchObject({ name: '<img src=x onerror=alert(1)>', header: '<script>', postProcessorId: 'generic' });
     expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
+
+  it('preserves old profile fields while migrating absent or malformed processor IDs conservatively', () => {
+    localStorage.setItem('i2g-profiles', JSON.stringify([
+      { id: 'old-pen', name: 'Old Pen', kind: 'pen', header: 'G90', footer: 'M2', toolOn: 'DOWN', toolOff: 'UP', safeZ: 0, workZ: 0, passDepth: 1, feed: 321, travel: 654 },
+      { id: 'bad-id', name: 'Bad ID', kind: 'laser', postProcessorId: '__proto__', header: '', footer: 'M2', toolOn: 'ON', toolOff: 'OFF', safeZ: 0, workZ: 0, passDepth: 1, feed: 111, travel: 222 },
+      { id: 'marlin', name: 'Marlin', kind: 'laser', postProcessorId: 'marlin-pen', header: '', footer: '', toolOn: 'DOWN', toolOff: 'UP', safeZ: 0, workZ: 0, passDepth: 1, feed: 500, travel: 700 },
+    ]));
+    const loaded = loadProfiles();
+    expect(loaded.find((profile) => profile.id === 'old-pen')).toMatchObject({ postProcessorId: 'generic', header: 'G90', toolOn: 'DOWN', feed: 321, travel: 654 });
+    expect(loaded.find((profile) => profile.id === 'bad-id')).toMatchObject({ postProcessorId: 'generic', kind: 'laser', toolOff: 'OFF' });
+    expect(loaded.find((profile) => profile.id === 'marlin')).toMatchObject({ postProcessorId: 'marlin-pen', kind: 'pen', toolOn: 'DOWN' });
   });
 
   it('caps persisted custom profiles to bound rendering and parsing work', () => {

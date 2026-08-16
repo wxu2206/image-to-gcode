@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { authorizeExport, buildPreflight, type PreflightInput } from './exportReview';
 import { generate, statistics, type ToolpathStats } from './gcode';
-import { canonicalJobKey, isCurrentRevision } from './jobRevision';
+import { canonicalJobKey, isCurrentRevision, outputJobKey } from './jobRevision';
 import { defaults, profiles } from './machine';
 import type { MachineProfile, Move, Toolpath } from './types';
 
@@ -36,11 +36,12 @@ describe('canonical G-code preflight', () => {
     const first = buildPreflight(input());
     const second = buildPreflight(input());
     expect(first).toEqual(second);
-    expect(first.status).toBe('passed');
-    expect(first).toMatchObject({ warningCount: 0, blockingCount: 0 });
+    expect(first.status).toBe('warnings');
+    expect(first).toMatchObject({ warningCount: 1, blockingCount: 0 });
     expect(first.checks.map(({ id, severity }) => `${id}:${severity}`)).toEqual([
       'completed-revision:pass',
       'configuration:pass',
+      'post-processor:warning',
       'canonical-coordinates:pass',
       'work-envelope-x:pass',
       'work-envelope-y:pass',
@@ -114,6 +115,20 @@ describe('canonical G-code preflight', () => {
     expect(buildPreflight(input({ profile })).checks.find((item) => item.id === 'tool-sequencing')).toMatchObject({ severity: 'blocking' });
   });
 
+  it('integrates processor-owned findings and blocks incomplete controller state commands', () => {
+    const pen = { ...profiles[3], toolOn: '', toolOff: 'UP' };
+    const result = buildPreflight(input({ profile: pen, stats: statistics(generate(toolpath, defaults, { ...pen, toolOn: 'DOWN' }).moves) }));
+    expect(result.checks.find((item) => item.id === 'post-processor')).toMatchObject({ severity: 'blocking' });
+    expect(result.checks.find((item) => item.id === 'cnc-z-range')).toBeUndefined();
+  });
+
+  it('blocks an unavailable active processor instead of silently exporting generic output', () => {
+    const malformed = { ...profiles[1], postProcessorId: 'removed-controller' } as unknown as MachineProfile;
+    const result = buildPreflight(input({ profile: malformed }));
+    expect(result.checks.find((item) => item.id === 'post-processor')).toMatchObject({ severity: 'blocking' });
+    expect(result.status).toBe('blocked');
+  });
+
   it('warns for materially redundant zero-length movements but not an isolated one', () => {
     const one = buildPreflight(input({ stats: withDiagnostics(validStats, { zeroLengthMoveCount: 1 }) }));
     expect(one.checks.find((item) => item.id === 'movement-geometry')?.severity).toBe('pass');
@@ -149,7 +164,7 @@ describe('canonical G-code preflight', () => {
     const previewOnlyKey = canonicalJobKey(1, { ...defaults, previewQuality: 'full' }, cnc, 'contour');
     const outputKey = canonicalJobKey(1, { ...defaults, feed: defaults.feed + 1 }, cnc, 'contour');
     expect(isCurrentRevision(completedKey, previewOnlyKey)).toBe(true);
-    expect(buildPreflight(input({ current: isCurrentRevision(completedKey, previewOnlyKey) })).status).toBe('passed');
+    expect(buildPreflight(input({ current: isCurrentRevision(completedKey, previewOnlyKey) })).status).toBe('warnings');
     expect(isCurrentRevision(completedKey, outputKey)).toBe(false);
     expect(buildPreflight(input({ current: isCurrentRevision(completedKey, outputKey) })).status).toBe('blocked');
   });
@@ -182,8 +197,19 @@ describe('preflight export policy and lazy generation', () => {
 
   it('preflights canonical statistics without requiring a serialized G-code document', () => {
     const result = buildPreflight(input());
-    expect(result.status).toBe('passed');
+    expect(result.status).toBe('warnings');
     expect(Object.prototype.hasOwnProperty.call(result, 'code')).toBe(false);
-    expect(authorizeExport(result, 'download', false)).toEqual({ allowed: true });
+    expect(authorizeExport(result, 'download', false).allowed).toBe(false);
+    expect(authorizeExport(result, 'download', true)).toEqual({ allowed: true });
+  });
+
+  it('separates canonical geometry identity from processor-specific output identity', () => {
+    const canonical = canonicalJobKey(1, defaults, profiles[1], 'contour');
+    const marlin = { ...profiles[1], postProcessorId: 'marlin-pen' as const };
+    const laser = { ...profiles[2], postProcessorId: 'grbl-laser' as const };
+    expect(canonicalJobKey(1, defaults, marlin, 'contour')).toBe(canonical);
+    expect(canonicalJobKey(1, defaults, laser, 'contour')).toBe(canonical);
+    expect(outputJobKey(canonical, marlin)).not.toBe(outputJobKey(canonical, profiles[1]));
+    expect(canonicalJobKey(1, defaults, profiles[0], 'contour')).not.toBe(canonical);
   });
 });

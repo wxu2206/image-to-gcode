@@ -1,5 +1,6 @@
 ; image-to-gcode - inspect before running
 ; mode: vector
+; post-processor: Custom / Generic G-code
 G90
 G21
 G90

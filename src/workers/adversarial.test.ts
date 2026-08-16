@@ -6,6 +6,7 @@ import type { Move } from '../core/types';
 import { isWorkerMessage } from './messages';
 import { packMoves, previewFromPacked } from './packedMoves';
 import { stageLabel } from './progress';
+import { isSerializeGcodeRequest } from './requests';
 
 describe('packed movement integrity', () => {
   it('preserves XY, command, working state, and visual run boundaries', () => {
@@ -50,7 +51,7 @@ describe('worker message trust boundary', () => {
   it('accepts structurally valid progress and inert G-code text', () => {
     expect(isWorkerMessage({ type: 'progress', id: 1, stage: 'preview', label: stageLabel.preview, stageProgress: 0.5, overallProgress: 0.9, requestId: 2 })).toBe(true);
     const code = '<script>alert(1)</script>\n';
-    expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, code, characters: code.length, lines: 1 })).toBe(true);
+    expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, outputKey: 'output-1', code, characters: code.length, lines: 1 })).toBe(true);
     expect(isWorkerMessage({ type: 'processed-preview-result', id: 1, preview: { width: 2, height: 1, data: new Uint8Array([0, 255]).buffer } })).toBe(true);
     const endMinutes = new Float64Array([0.5]);
     expect(isWorkerMessage({
@@ -72,9 +73,17 @@ describe('worker message trust boundary', () => {
       previewMs: 1,
     })).toBe(false);
     expect(isWorkerMessage({ type: 'preview-result', id: 1, requestId: 1, moves: [], timing: { endMinutes: new Float64Array(0).buffer, totalMinutes: 2 }, segments: 0, previewMs: 1 })).toBe(false);
-    expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, code: 'G90\n', characters: 999, lines: 1 })).toBe(false);
+    expect(isWorkerMessage({ type: 'gcode-result', id: 1, requestId: 2, outputKey: 'output-1', code: 'G90\n', characters: 999, lines: 1 })).toBe(false);
     expect(isWorkerMessage({ type: 'processed-preview-result', id: 1, preview: { width: 2, height: 1, data: new Uint8Array([0]).buffer } })).toBe(false);
     expect(isWorkerMessage({ type: 'error', id: 1, stage: 'other', message: 'bad' })).toBe(false);
+  });
+
+  it('strictly validates processor IDs and bounded profiles in serialization requests', () => {
+    const request = { type: 'serialize-gcode', id: 1, requestId: 2, outputKey: 'output-1', profile: profiles[1] };
+    expect(isSerializeGcodeRequest(request)).toBe(true);
+    expect(isSerializeGcodeRequest({ ...request, profile: { ...profiles[1], postProcessorId: 'remote-plugin' } })).toBe(false);
+    expect(isSerializeGcodeRequest({ ...request, outputKey: 'x'.repeat(131_073) })).toBe(false);
+    expect(isSerializeGcodeRequest({ ...request, profile: { ...profiles[1], header: 'x'.repeat(16_385) } })).toBe(false);
   });
 
   it('accepts compact canonical diagnostics and rejects malformed diagnostic counts', () => {

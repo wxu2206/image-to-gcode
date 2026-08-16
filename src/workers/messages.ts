@@ -8,7 +8,7 @@ export type WorkerMessage =
   | { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number }
   | { type: 'processed-preview-result'; id: number; preview: { width: number; height: number; data: ArrayBuffer } }
   | { type: 'preview-result'; id: number; requestId: number; moves: Move[]; timing: { endMinutes: ArrayBuffer; totalMinutes: number }; segments: number; previewMs: number }
-  | { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number }
+  | { type: 'gcode-result'; id: number; requestId: number; outputKey: string; code: string; characters: number; lines: number }
   | { type: 'error'; id: number; stage: WorkerErrorStage; requestId?: number; message: string };
 
 const stages = new Set<WorkerStage>(['image', 'reduce', 'extract', 'order', 'movements', 'gcode', 'statistics', 'preview', 'serialize']);
@@ -122,7 +122,7 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
       && validPreviewTiming(value.timing, value.moves) && nonNegative(value.previewMs);
   }
   if (value.type === 'gcode-result') {
-    return integer(value.requestId) && typeof value.code === 'string'
+    return integer(value.requestId) && typeof value.outputKey === 'string' && value.outputKey.length <= 131_072 && typeof value.code === 'string'
       && integer(value.characters) && value.characters === value.code.length && integer(value.lines);
   }
   if (value.type === 'error') {
