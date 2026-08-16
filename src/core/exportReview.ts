@@ -2,6 +2,7 @@ import { classifyMovementCount } from './complexity';
 import type { ToolpathStats } from './gcode';
 import { configurationErrors, profileErrors, profileWarnings, profiles } from './machine';
 import type { MachineProfile, Point, Settings } from './types';
+import { getPostProcessor } from '../postprocessors/registry';
 
 export type PreflightSeverity = 'pass' | 'warning' | 'blocking';
 export type PreflightStatus = 'passed' | 'warnings' | 'blocked';
@@ -115,13 +116,16 @@ export function buildPreflight(input: PreflightInput): PreflightResult {
   const { settings, profile, placementPending } = input;
   const canonical = input.current && !placementPending ? input.stats : null;
   const checks: PreflightCheck[] = [];
+  const processor = getPostProcessor(profile.postProcessorId);
+  const capabilities = processor?.capabilities(profile) ?? null;
+  const processorFindings = processor?.validateProfile(profile, settings) ?? [];
   const configured = configurationErrors(settings, profile.kind);
   const profileConfiguration = profileErrors(profile);
   const feedErrors = [...configured.filter(isFeedError), ...profileConfiguration.filter(isFeedError)];
   if ([settings.feed, settings.travel, profile.feed, profile.travel].some((value) => !Number.isFinite(value) || value <= 0)) {
     feedErrors.push('Configured work and travel feed values must be finite and positive.');
   }
-  const zErrors = profile.kind === 'cnc'
+  const zErrors = capabilities?.requiresSafeZ
     ? [...configured.filter(isZError), ...profileConfiguration.filter(isZError)]
     : [];
   const toolErrors = profileConfiguration.filter((message) => /tool-(?:on|off)/i.test(message));
@@ -143,6 +147,18 @@ export function buildPreflight(input: PreflightInput): PreflightResult {
   checks.push(generalErrors.length
     ? check('configuration', 'blocking', 'Machine configuration', joinMessages(generalErrors))
     : check('configuration', 'pass', 'Machine configuration', 'Known configuration fields are valid.'));
+
+  if (!processor) {
+    checks.push(check('post-processor', 'blocking', 'Post-processor', 'The selected post-processor is unavailable or untrusted. Select a valid controller/output.'));
+  } else {
+    const blocking = processorFindings.filter((finding) => finding.severity === 'blocking');
+    const warnings = processorFindings.filter((finding) => finding.severity === 'warning');
+    checks.push(blocking.length
+      ? check('post-processor', 'blocking', `Post-processor · ${processor.name}`, joinMessages(blocking.map((finding) => finding.message)))
+      : warnings.length
+        ? check('post-processor', 'warning', `Post-processor · ${processor.name}`, joinMessages(warnings.map((finding) => finding.message)))
+        : check('post-processor', 'pass', `Post-processor · ${processor.name}`, `${processor.controllerFamily} output configuration is complete.`));
+  }
 
   if (!canonical) {
     checks.push(check('canonical-coordinates', 'blocking', 'Canonical coordinates', 'Canonical movement diagnostics are unavailable for the current revision.'));
@@ -181,7 +197,7 @@ export function buildPreflight(input: PreflightInput): PreflightResult {
     ]))
     : check('feed-values', 'pass', 'Feed values', `Work and travel feeds are finite and positive in ${settings.units}/min.`));
 
-  if (profile.kind === 'cnc') {
+  if (capabilities?.requiresSafeZ) {
     const minimumZ = bounds?.minZ;
     const maximumZ = bounds?.maxZ;
     const tolerance = Number.isInteger(settings.precision) && settings.precision >= 0 ? 0.5 * 10 ** -settings.precision : 0;
@@ -221,7 +237,7 @@ export function buildPreflight(input: PreflightInput): PreflightResult {
       ...(diagnostics?.invalidStateCount ? [`${diagnostics.invalidStateCount.toLocaleString()} movement${diagnostics.invalidStateCount === 1 ? '' : 's'} conflict with their work/travel state.`] : []),
       ...(diagnostics?.unsafeCncRapidCount ? [`${diagnostics.unsafeCncRapidCount.toLocaleString()} CNC XY rapid${diagnostics.unsafeCncRapidCount === 1 ? '' : 's'} occur without both endpoints at safe Z.`] : []),
     ]))
-    : check('tool-sequencing', 'pass', 'Tool sequencing', profile.kind === 'cnc'
+    : check('tool-sequencing', 'pass', 'Tool sequencing', capabilities?.requiresSafeZ
       ? 'Generator-owned work/travel states are consistent and XY rapids follow safe retracts.'
       : 'Generator-owned work/travel states and transitions are consistent.'));
 

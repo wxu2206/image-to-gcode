@@ -4,10 +4,11 @@ import { AlertTriangle, Copy, Download, Pause, Play, RotateCcw, Settings2, ZoomI
 import { ImageInput } from './components/ImageInput';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { PreflightDialog, type PreflightExportAction } from './components/PreflightDialog';
-import { loadProfiles, loadSettings } from './core/machine';
+import { MachineControls } from './components/MachineControls';
+import { loadProfiles, loadSettings, profiles as builtInProfiles } from './core/machine';
 import { estimateComplexity } from './core/complexity';
 import type { ToolpathStats } from './core/gcode';
-import type { ConversionMode, Move, PreviewQuality, Settings } from './core/types';
+import type { ConversionMode, MachineProfile, Move, PreviewQuality, Settings } from './core/types';
 import { decodeImageFile, inputFileKind, readImagePixels, readSvgFile } from './image/loadImage';
 import { applyWorkerProgress, initialProgress, isCurrentPreviewRequest, previewProgress, startingProgress, type PipelineProgress, type WorkerTimings } from './workers/progress';
 import { fitViewport, zoomAtCursor, type Viewport } from './visualization/viewport';
@@ -16,7 +17,7 @@ import { centerTransform, fitTransformToWorkArea, normalizeRotation } from './co
 import { transformedBounds } from './core/transform';
 import { machinePoint } from './core/geometry';
 import { authorizeExport, buildPreflight } from './core/exportReview';
-import { canonicalJobKey, isCurrentJobRevision, isCurrentRevision } from './core/jobRevision';
+import { canonicalJobKey, isCurrentJobRevision, isCurrentRevision, outputJobKey } from './core/jobRevision';
 import { convertSettingsUnits } from './core/units';
 import { gcodeFilename } from './utils/filename';
 import { isWorkerMessage, type WorkerMessage } from './workers/messages';
@@ -28,8 +29,7 @@ import { parseSvgText } from './vector/parseSvg';
 import { buildVectorPreviewPath } from './vector/preview';
 import './style.css';
 
-const machineNumKeys = ['workWidth', 'workHeight', 'feed', 'travel', 'safeZ', 'workZ', 'maxDepth', 'passes', 'lineSpacing', 'precision'] as const;
-const imageProcessNumKeys = ['threshold', 'simplify', 'brightness', 'contrast'] as const;
+const builtInProfileIds = new Set(builtInProfiles.map((profile) => profile.id));
 const readLocalSetting = (key: string) => {
   try { return localStorage.getItem(key); } catch { return null; }
 };
@@ -88,6 +88,14 @@ export function App() {
     return profiles.some((item) => item.id === stored) ? stored : 'cnc';
   });
   const profile = profiles.find((item) => item.id === profileId) || profiles[0];
+  const geometryKind: MachineProfile['kind'] = profile.kind === 'cnc' ? 'cnc' : 'pen';
+  const geometryPassDepth = profile.kind === 'cnc' ? profile.passDepth : 1;
+  const canonicalProfile = useMemo<MachineProfile>(() => ({
+    id: 'canonical-geometry', name: 'Canonical geometry', kind: geometryKind,
+    postProcessorId: geometryKind === 'cnc' ? 'generic-cnc' : 'generic',
+    header: '', footer: '', toolOn: '', toolOff: '', safeZ: 0, workZ: 0,
+    passDepth: geometryPassDepth, feed: 1, travel: 1,
+  }), [geometryKind, geometryPassDepth]);
   const [mode, setMode] = useState<ConversionMode>('raster');
   const [image, setImage] = useState<LoadedImage | null>(null);
   const [sourcePixels, setSourcePixels] = useState<ImageData | null>(null);
@@ -131,6 +139,7 @@ export function App() {
   const uploadRequestRef = useRef(0);
   const lastRasterModeRef = useRef<Exclude<ConversionMode, 'vector'>>('raster');
   const currentJobKeyRef = useRef<string | null>(null);
+  const currentOutputKeyRef = useRef<string | null>(null);
   const nameRef = useRef('');
   const renderRef = useRef(0);
   const renderedPreviewRef = useRef<Move[] | null>(null);
@@ -183,7 +192,17 @@ export function App() {
   const jobKey = useMemo(() => sourcePixels || vectorDocument
     ? canonicalJobKey(sourceRevision, workerSettings, profile, mode)
     : null, [sourcePixels, vectorDocument, sourceRevision, workerSettings, profile, mode]);
+  const outputKey = useMemo(() => jobKey ? outputJobKey(jobKey, profile) : null, [jobKey, profile]);
   currentJobKeyRef.current = jobKey;
+  currentOutputKeyRef.current = outputKey;
+  useEffect(() => {
+    // A controller/command change can reuse canonical geometry, but any in-flight
+    // or cached serialization belongs to the previous machine-output revision.
+    gcodeRequestRef.current += 1;
+    pendingGcodeAction.current = null;
+    setGcode(null);
+    setGcodeState('idle');
+  }, [outputKey]);
   const processedKey = sourcePixels ? processingPreviewKey(sourceRevision, settings) : null;
   const currentProcessedPreview = isCurrentProcessedPreview(processedPreview, processedKey) ? processedPreview : null;
   const placementPending = settings.outputWidth !== stablePlacement.outputWidth || settings.outputHeight !== stablePlacement.outputHeight || settings.offsetX !== stablePlacement.offsetX || settings.offsetY !== stablePlacement.offsetY || settings.rotationDeg !== stablePlacement.rotationDeg;
@@ -194,8 +213,8 @@ export function App() {
   const currentPreviewTiming = currentJobResult && previewTiming?.jobId === currentJobResult.id && previewTiming.key === jobKey ? previewTiming : null;
   const playbackTotalMinutes = currentPreviewTiming?.totalMinutes ?? 0;
   const playbackProgress = playbackTotalMinutes > 0 ? Math.min(1, playbackMinutes / playbackTotalMinutes) : 0;
-  const currentGcode = currentJobResult && isCurrentRevision(gcode?.key, jobKey) && gcode?.jobId === currentJobResult.id ? gcode : null;
-  const reviewedRevisionCurrent = !reviewOpen || reviewKey === jobKey;
+  const currentGcode = currentJobResult && isCurrentRevision(gcode?.key, outputKey) && gcode?.jobId === currentJobResult.id ? gcode : null;
+  const reviewedRevisionCurrent = !reviewOpen || reviewKey === outputKey;
   const validWorkArea = Number.isFinite(settings.workWidth) && Number.isFinite(settings.workHeight) && settings.workWidth > 0 && settings.workHeight > 0;
   const imagePreviewBounds = useMemo(() => image && validWorkArea && Number.isFinite(settings.outputWidth) && Number.isFinite(settings.outputHeight) && settings.outputWidth > 0 && settings.outputHeight > 0
     ? transformedBounds(settings)
@@ -293,13 +312,14 @@ export function App() {
         setTimings((current) => current ? { ...current, previewPreparationMs: message.previewMs, previewSegments: message.segments } : current);
       } else if (message.type === 'gcode-result') {
         if (!isCurrentPreviewRequest(gcodeRequestRef.current, message.requestId)) return;
-        const next = { jobId: message.id, key: jobKey, code: message.code, characters: message.characters, lines: message.lines };
+        if (message.outputKey !== currentOutputKeyRef.current) return;
+        const next = { jobId: message.id, key: message.outputKey, code: message.code, characters: message.characters, lines: message.lines };
         setGcode(next);
         setGcodeState('ready');
         setPipeline({ label: 'Ready', value: 1, active: false });
         const pending = pendingGcodeAction.current;
         pendingGcodeAction.current = null;
-        if (!pending || pending.key !== jobKey) return;
+        if (!pending || pending.key !== message.outputKey) return;
         if (pending.action === 'copy') void copyGcodeDocument(next.code).catch(() => setWorkerError('The browser could not copy G-code to the clipboard.'));
         if (pending.action === 'download') {
           try {
@@ -343,12 +363,12 @@ export function App() {
     };
     try {
       if (vectorDocument) {
-        worker.postMessage({ type: 'run', id, source: { kind: 'vector', document: vectorDocument }, settings: workerSettings, profile, mode: 'vector' });
+        worker.postMessage({ type: 'run', id, source: { kind: 'vector', document: vectorDocument }, settings: workerSettings, profile: canonicalProfile, mode: 'vector' });
       } else {
         // Keep ImageData in React state for restarts; the per-job copy is transferred,
         // not structured-cloned, to the worker.
         const data = sourcePixels!.data.slice();
-        worker.postMessage({ type: 'run', id, source: { kind: 'raster', pixels: { width: sourcePixels!.width, height: sourcePixels!.height, data: data.buffer } }, settings: workerSettings, profile, mode }, [data.buffer]);
+        worker.postMessage({ type: 'run', id, source: { kind: 'raster', pixels: { width: sourcePixels!.width, height: sourcePixels!.height, data: data.buffer } }, settings: workerSettings, profile: canonicalProfile, mode }, [data.buffer]);
       }
     } catch {
       worker.terminate();
@@ -356,7 +376,7 @@ export function App() {
       setWorkerError('The toolpath job could not be sent to the worker.');
     }
     return () => worker.terminate();
-  }, [sourcePixels, vectorDocument, workerSettings, profile, mode, complexity, complexityKey, approvedExtremeKey, jobKey, processedKey]);
+  }, [sourcePixels, vectorDocument, workerSettings, canonicalProfile, mode, complexity, complexityKey, approvedExtremeKey, jobKey, processedKey]);
 
   useEffect(() => {
     if (!currentJobResult || !jobKey) return;
@@ -680,6 +700,23 @@ export function App() {
     if (Object.values(values).some((value) => typeof value === 'number' && !Number.isFinite(value))) return;
     setSettings((current) => ({ ...current, ...values }));
   };
+  const saveCustomProfiles = (next: MachineProfile[]) => {
+    writeLocalSetting('i2g-profiles', JSON.stringify(next.filter((item) => !builtInProfileIds.has(item.id))));
+  };
+  const updateProfile = (values: Partial<MachineProfile>) => setProfiles((current) => {
+    const next = current.map((item) => item.id === profile.id ? { ...item, ...values } : item);
+    saveCustomProfiles(next);
+    return next;
+  });
+  const duplicateProfile = () => {
+    const custom = { ...profile, id: crypto.randomUUID(), name: `Custom ${profile.name}` };
+    setProfiles((current) => {
+      const next = [...current, custom];
+      saveCustomProfiles(next);
+      return next;
+    });
+    setProfileId(custom.id);
+  };
   const queuePan = (next: { x: number; y: number }) => {
     pendingPanRef.current = next;
     if (panFrameRef.current) return;
@@ -792,11 +829,11 @@ export function App() {
   const openPreflight = (action: PreflightExportAction) => {
     reviewReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setReviewAction(action);
-    setReviewKey(jobKey);
+    setReviewKey(outputKey);
     setReviewOpen(true);
   };
   const requestGcode = (action: 'inspect' | 'copy' | 'download', expectedKey?: string | null, reviewedWarnings = false) => {
-    if (!currentJobResult || !jobKey || placementPending || (expectedKey !== undefined && expectedKey !== jobKey)) return;
+    if (!currentJobResult || !outputKey || placementPending || (expectedKey !== undefined && expectedKey !== outputKey)) return;
     if (action !== 'inspect') {
       const authorization = authorizeExport(preflight, action, reviewedWarnings);
       if (!authorization.allowed) {
@@ -811,11 +848,11 @@ export function App() {
     }
     const requestId = gcodeRequestRef.current + 1;
     gcodeRequestRef.current = requestId;
-    pendingGcodeAction.current = { action, key: jobKey };
+    pendingGcodeAction.current = { action, key: outputKey };
     setGcodeState('generating');
     setPipeline({ label: 'Generating G-code…', value: 0, active: true });
     try {
-      workerRef.current?.postMessage({ type: 'serialize-gcode', id: currentJobResult.id, requestId });
+      workerRef.current?.postMessage({ type: 'serialize-gcode', id: currentJobResult.id, requestId, outputKey, profile });
     } catch {
       pendingGcodeAction.current = null;
       setGcodeState('error');
@@ -829,7 +866,18 @@ export function App() {
   return <div className="app">
     <header><div className="brand"><Settings2 size={20} /> image<span>→</span>gcode <small>LOCAL CAM</small></div><div className="toolbar"><ImageInput variant="toolbar" onFile={upload} /><span className={`preflight-compact ${image ? preflight.status : ''}`} role="status">{!image ? 'Preflight waiting' : preflight.status === 'passed' ? '✓ Preflight passed' : preflight.status === 'warnings' ? `⚠ ${preflight.warningCount} warning${preflight.warningCount === 1 ? '' : 's'}` : `✕ ${preflight.blockingCount} blocking`}</span><button disabled={!image || placementPending} title={placementPending ? 'Waiting for placement update' : preflight.status === 'blocked' ? 'Review blocking preflight issues' : undefined} onClick={() => openPreflight('download')}><Download size={16} /> Download G-code</button></div></header>
     <main className="layout">
-      <aside className="sidebar"><h2>Job setup</h2><label>Conversion mode<select value={mode} disabled={Boolean(vectorDocument)} onChange={(event) => { const next = event.target.value as Exclude<ConversionMode, 'vector'>; lastRasterModeRef.current = next; setMode(next); }}>{vectorDocument ? <option value="vector">Native SVG vectors</option> : <><option value="raster">Raster / scanline</option><option value="contour">Contour / outline</option><option value="grayscale">Grayscale engraving</option></>}</select></label><label>Machine profile<select value={profileId} onChange={(event) => setProfileId(event.target.value)}>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="minor" onClick={() => { const custom = { ...profile, id: crypto.randomUUID(), name: `Custom ${profile.name}` }; setProfiles((current) => { const next = [...current, custom]; writeLocalSetting('i2g-profiles', JSON.stringify(next.filter((item) => !['cnc', 'pen', 'laser'].includes(item.id)))); return next; }); setProfileId(custom.id); }}>Duplicate profile</button>{image && <PlacementControls settings={settings} aspectRatio={image.naturalWidth / image.naturalHeight} update={updateTransform} />}<h3>Machine</h3><div className="grid"><label>Units<select value={settings.units} onChange={(event) => changeUnits(event.target.value as Settings['units'])}><option value="mm">Millimeters</option><option value="in">Inches</option></select></label><label>Origin<select value={settings.origin} onChange={(event) => set('origin', event.target.value as Settings['origin'])}><option value="bottom-left">Bottom left</option><option value="top-left">Top left</option><option value="center">Center</option></select></label>{machineNumKeys.map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" value={settings[key]} step={key.includes('Width') || key.includes('Height') ? 1 : 0.1} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div><label className="check"><input type="checkbox" checked={settings.invertX} onChange={(event) => set('invertX', event.target.checked)} /> Invert X</label><label className="check"><input type="checkbox" checked={settings.invertY} onChange={(event) => set('invertY', event.target.checked)} /> Invert Y</label><h3>Toolpath quality</h3><label className="detail-control" htmlFor="toolpath-detail"><span>Toolpath Detail <b>{detailLabel(settings.toolpathDetail)}</b></span><output>{detailText(settings.toolpathDetail)}</output><input id="toolpath-detail" aria-describedby="toolpath-detail-help" type="range" min="0.025" max="1" step="0.025" value={settings.toolpathDetail} onChange={(event) => set('toolpathDetail', Number(event.target.value))} /><input aria-label="Toolpath detail in millimetres" type="number" min="0.025" max="2" step="0.025" value={settings.toolpathDetail} onChange={(event) => set('toolpathDetail', Number(event.target.value))} /><small id="toolpath-detail-help">{vectorDocument ? 'Maximum physical curve deviation in millimetres. SVG geometry stays vector-native until this worker-side flattening step.' : 'Controls physical detail. Very fine values can greatly increase processing time and G-code size; machine resolution may be lower.'}</small></label>{currentTimings && <div className="complexity">{vectorDocument && <>{vectorDocument.paths.length.toLocaleString()} vector paths · {currentTimings.sourceSegmentCount.toLocaleString()} SVG segments → {currentTimings.flattenedPointCount.toLocaleString()} points<br /></>}{currentTimings.movementCount.toLocaleString()} movements<br />{Math.round(currentTimings.packedMovementBytes / 1024).toLocaleString()} KiB worker-packed<br />{currentGcode ? `${(currentGcode.characters / 1_000_000).toFixed(2)} MB G-code` : 'G-code generated on demand'}</div>}<label className="preview-quality"><span>Preview Quality</span><small>Canvas only — never changes G-code or statistics.</small><div role="group" aria-label="Preview Quality">{(['low', 'balanced', 'high', 'full'] as PreviewQuality[]).map((quality) => <button key={quality} type="button" className={settings.previewQuality === quality ? 'selected' : ''} aria-pressed={settings.previewQuality === quality} onClick={() => set('previewQuality', quality)}>{quality}</button>)}</div></label>{!vectorDocument && <><h3>Image processing</h3><label>Filter<select value={settings.filter} onChange={(event) => set('filter', event.target.value as Settings['filter'])}><option value="grayscale">Grayscale</option><option value="threshold">Threshold</option><option value="edge">Edge detection</option><option value="dither">Dithering</option></select></label><label title="Removes isolated tiny marks. Strong cleanup can remove extremely fine intentional features; dither patterns are preserved.">Noise cleanup<select value={settings.noiseCleanup} onChange={(event) => set('noiseCleanup', event.target.value as Settings['noiseCleanup'])}><option value="off">Off</option><option value="light">Light</option><option value="normal">Normal</option><option value="strong">Strong</option></select></label><div className="grid">{imageProcessNumKeys.map((key) => <label key={key}>{key.replace(/([A-Z])/g, ' $1')}<input type="number" value={settings[key]} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div><label className="check"><input type="checkbox" checked={settings.invert} onChange={(event) => set('invert', event.target.checked)} /> Invert image</label><label className="check"><input type="checkbox" checked={settings.serpentine} onChange={(event) => set('serpentine', event.target.checked)} /> Serpentine scan</label></>}</aside>
+      <aside className="sidebar">
+        <h2>Job setup</h2>
+        <label>Conversion mode<select value={mode} disabled={Boolean(vectorDocument)} onChange={(event) => { const next = event.target.value as Exclude<ConversionMode, 'vector'>; lastRasterModeRef.current = next; setMode(next); }}>{vectorDocument ? <option value="vector">Native SVG vectors</option> : <><option value="raster">Raster / scanline</option><option value="contour">Contour / outline</option><option value="grayscale">Grayscale engraving</option></>}</select></label>
+        <label>Machine profile<select value={profileId} onChange={(event) => setProfileId(event.target.value)}>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <button className="minor" type="button" onClick={duplicateProfile}>Duplicate profile</button>
+        {image && <PlacementControls settings={settings} aspectRatio={image.naturalWidth / image.naturalHeight} update={updateTransform} />}
+        <MachineControls settings={settings} profile={profile} rasterSource={!vectorDocument} onSetting={set} onUnits={changeUnits} onProfile={updateProfile} />
+        <h3>Toolpath quality</h3>
+        <label className="detail-control" htmlFor="toolpath-detail"><span>Toolpath Detail <b>{detailLabel(settings.toolpathDetail)}</b></span><output>{detailText(settings.toolpathDetail)}</output><input id="toolpath-detail" aria-describedby="toolpath-detail-help" type="range" min="0.025" max="1" step="0.025" value={settings.toolpathDetail} onChange={(event) => set('toolpathDetail', Number(event.target.value))} /><input aria-label="Toolpath detail in millimetres" type="number" min="0.025" max="2" step="0.025" value={settings.toolpathDetail} onChange={(event) => set('toolpathDetail', Number(event.target.value))} /><small id="toolpath-detail-help">{vectorDocument ? 'Maximum physical curve deviation in millimetres. SVG geometry stays vector-native until this worker-side flattening step.' : 'Controls physical detail. Very fine values can greatly increase processing time and G-code size; machine resolution may be lower.'}</small></label>
+        {currentTimings && <div className="complexity">{vectorDocument && <>{vectorDocument.paths.length.toLocaleString()} vector paths · {currentTimings.sourceSegmentCount.toLocaleString()} SVG segments → {currentTimings.flattenedPointCount.toLocaleString()} points<br /></>}{currentTimings.movementCount.toLocaleString()} movements<br />{Math.round(currentTimings.packedMovementBytes / 1024).toLocaleString()} KiB worker-packed<br />{currentGcode ? `${(currentGcode.characters / 1_000_000).toFixed(2)} MB G-code` : 'G-code generated on demand'}</div>}
+        <label className="preview-quality"><span>Preview Quality</span><small>Canvas only — never changes G-code or statistics.</small><div role="group" aria-label="Preview Quality">{(['low', 'balanced', 'high', 'full'] as PreviewQuality[]).map((quality) => <button key={quality} type="button" className={settings.previewQuality === quality ? 'selected' : ''} aria-pressed={settings.previewQuality === quality} onClick={() => set('previewQuality', quality)}>{quality}</button>)}</div></label>
+      </aside>
       <section className="workspace">
         <div className="workspace-head">
           <div className="file-meta">{name ? <><b>{name}</b> · {vectorDocument && <><span className="vector-badge">VECTOR</span> · </>}{image?.naturalWidth} × {image?.naturalHeight}{vectorDocument ? ' SVG units' : ' px'} · {(image!.naturalWidth / image!.naturalHeight).toFixed(2)}:1</> : 'No source loaded — import a file or drop it below'}</div>

@@ -11,17 +11,17 @@ import { flattenVectorDocument } from '../vector/flatten';
 import type { VectorDocument } from '../vector/model';
 import { packedMoveBytes, packMoves, timedPreviewFromPacked, type PackedMoves } from './packedMoves';
 import { overallProgress, stageLabel, type WorkerProgressMessage, type WorkerStage, type WorkerTimings } from './progress';
+import { isSerializeGcodeRequest, type SerializeGcodeRequest } from './requests';
 
 type RasterSource = { kind: 'raster'; pixels: { width: number; height: number; data: ArrayBuffer } };
 type VectorSource = { kind: 'vector'; document: VectorDocument };
 type RunJobRequest = { type: 'run'; id: number; source: RasterSource | VectorSource; settings: Settings; profile: MachineProfile; mode: ConversionMode };
 type PreviewJobRequest = { type: 'prepare-preview'; id: number; requestId: number; quality: PreviewQuality };
-type SerializeRequest = { type: 'serialize-gcode'; id: number; requestId: number };
-type JobRequest = RunJobRequest | PreviewJobRequest | SerializeRequest;
+type JobRequest = RunJobRequest | PreviewJobRequest | SerializeGcodeRequest;
 type JobResult = { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number };
 type ProcessedPreviewResult = { type: 'processed-preview-result'; id: number; preview: { width: number; height: number; data: ArrayBuffer } };
 type PreviewResult = { type: 'preview-result'; id: number; requestId: number; moves: ReturnType<typeof timedPreviewFromPacked>['moves']; timing: { endMinutes: ArrayBuffer; totalMinutes: number }; segments: number; previewMs: number };
-type GcodeResult = { type: 'gcode-result'; id: number; requestId: number; code: string; characters: number; lines: number };
+type GcodeResult = { type: 'gcode-result'; id: number; requestId: number; outputKey: string; code: string; characters: number; lines: number };
 type JobError = { type: 'error'; id: number; stage: 'run' | 'preview' | 'serialize'; requestId?: number; message: string };
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 let completed: { id: number; toolpath: Toolpath; settings: Settings; profile: MachineProfile; packed: PackedMoves } | null = null;
@@ -161,13 +161,18 @@ function preparePreview(job: PreviewJobRequest) {
   }
 }
 
-function serializeGcode(job: SerializeRequest) {
+function serializeGcode(job: SerializeGcodeRequest) {
   if (!completed || completed.id !== job.id) return;
   const report = reporter(job.id, job.requestId);
   try {
-    const generated = generate(completed.toolpath, completed.settings, completed.profile, (stage, done, total) => report('serialize', stage === 'gcode' ? done : 0, stage === 'gcode' ? total : 1));
+    const requestedCnc = job.profile.kind === 'cnc';
+    const completedCnc = completed.profile.kind === 'cnc';
+    if (requestedCnc !== completedCnc || (requestedCnc && job.profile.passDepth !== completed.profile.passDepth)) {
+      throw new Error('The machine geometry changed; regenerate the canonical job before serialization.');
+    }
+    const generated = generate(completed.toolpath, completed.settings, job.profile, (stage, done, total) => report('serialize', stage === 'gcode' ? done : 0, stage === 'gcode' ? total : 1));
     report('serialize', 1, 1);
-    worker.postMessage({ type: 'gcode-result', id: job.id, requestId: job.requestId, code: generated.code, characters: generated.code.length, lines: countLines(generated.code) } satisfies GcodeResult);
+    worker.postMessage({ type: 'gcode-result', id: job.id, requestId: job.requestId, outputKey: job.outputKey, code: generated.code, characters: generated.code.length, lines: countLines(generated.code) } satisfies GcodeResult);
   } catch (error) {
     worker.postMessage({ type: 'error', id: job.id, stage: 'serialize', requestId: job.requestId, message: error instanceof Error ? error.message : 'G-code serialization failed.' } satisfies JobError);
   }
@@ -176,5 +181,11 @@ function serializeGcode(job: SerializeRequest) {
 worker.onmessage = (event: MessageEvent<JobRequest>) => {
   if (event.data.type === 'run') run(event.data);
   else if (event.data.type === 'prepare-preview') preparePreview(event.data);
-  else serializeGcode(event.data);
+  else if (isSerializeGcodeRequest(event.data)) serializeGcode(event.data);
+  else {
+    const candidate = event.data as { id?: unknown; requestId?: unknown };
+    if (typeof candidate.id === 'number' && typeof candidate.requestId === 'number') {
+      worker.postMessage({ type: 'error', id: candidate.id, requestId: candidate.requestId, stage: 'serialize', message: 'The G-code serialization request was invalid or untrusted.' } satisfies JobError);
+    }
+  }
 };

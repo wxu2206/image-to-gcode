@@ -1,9 +1,8 @@
 import type { ConversionMode, MachineProfile, Settings } from './types';
 
 /**
- * Canonical-output identity. Viewport state, preview quality, filename, aspect
- * lock, and fit preference are deliberately excluded because they cannot alter
- * machine geometry or serialized G-code.
+ * Canonical movement identity. Controller syntax and custom commands are kept
+ * out so processor changes can reuse completed image/vector geometry.
  */
 export function canonicalJobKey(sourceRevision: number, settings: Settings, profile: MachineProfile, mode: ConversionMode): string {
   return JSON.stringify([
@@ -20,8 +19,21 @@ export function canonicalJobKey(sourceRevision: number, settings: Settings, prof
     settings.threshold, settings.serpentine, settings.simplify,
     settings.toolpathDetail, settings.noiseCleanup,
     settings.brightness, settings.contrast, settings.invert, settings.filter,
-    profile.kind, profile.header, profile.footer, profile.toolOn, profile.toolOff,
-    profile.passDepth,
+    profile.kind === 'cnc' ? 'cnc' : 'xy',
+    profile.kind === 'cnc' ? profile.passDepth : null,
+  ]);
+}
+
+/** Machine-output identity layered on top of an authoritative canonical job. */
+export function outputJobKey(canonicalKey: string, profile: MachineProfile): string {
+  return JSON.stringify([
+    canonicalKey,
+    profile.postProcessorId,
+    profile.kind,
+    profile.header,
+    profile.footer,
+    profile.toolOn,
+    profile.toolOff,
   ]);
 }
 

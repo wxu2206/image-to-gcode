@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildPreflight } from './exportReview';
 import { distance, machinePoint, scaleToOutput } from './geometry';
 import { buildMovements, generate, statistics } from './gcode';
-import { canonicalJobKey, isCurrentJobRevision, isCurrentRevision } from './jobRevision';
+import { canonicalJobKey, isCurrentJobRevision, isCurrentRevision, outputJobKey } from './jobRevision';
 import { configurationErrors, defaults, profileErrors, profiles, validate } from './machine';
 import type { MachineProfile, Path, Settings, Toolpath } from './types';
 import { convertSettingsUnits, MM_PER_INCH } from './units';
@@ -295,7 +295,9 @@ describe('configuration and revision integrity', () => {
     for (const change of changes) expect(canonicalJobKey(1, { ...base, ...change }, profiles[0], 'raster')).not.toBe(original);
     expect(canonicalJobKey(2, base, profiles[0], 'raster')).not.toBe(original);
     expect(canonicalJobKey(1, base, profiles[0], 'contour')).not.toBe(original);
-    expect(canonicalJobKey(1, base, { ...profiles[0], header: 'G17\nG54' }, 'raster')).not.toBe(original);
+    const customHeader = { ...profiles[0], header: 'G17\nG54' };
+    expect(canonicalJobKey(1, base, customHeader, 'raster')).toBe(original);
+    expect(outputJobKey(original, customHeader)).not.toBe(outputJobKey(original, profiles[0]));
     expect(canonicalJobKey(1, { ...base, previewQuality: 'full', lockAspect: false, fit: false }, profiles[0], 'raster')).toBe(original);
     const geometry = makeToolpath([workPath('preview-independent', [{ x: 0, y: 0 }, { x: 10, y: 10 }])]);
     expect(generate(geometry, { ...base, previewQuality: 'low' }, profiles[1]).code)

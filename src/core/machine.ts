@@ -1,5 +1,6 @@
 import type { MachineProfile, Settings } from './types';
 import { transformedBounds } from './transform';
+import { getPostProcessor, kindForProcessor, migratePostProcessorId } from '../postprocessors/registry';
 
 export const MAX_DIMENSION = 1_000_000;
 export const MAX_FEED_RATE = 1_000_000;
@@ -8,9 +9,15 @@ const MAX_Z_MAGNITUDE = 1_000_000;
 const MAX_CUSTOM_PROFILES = 100;
 
 export const profiles: MachineProfile[] = [
-  { id: 'cnc', name: 'Generic CNC Router', kind: 'cnc', header: 'G90\nG17', footer: 'M2', toolOn: '', toolOff: '', safeZ: 5, workZ: -1, passDepth: 1, feed: 600, travel: 1800 },
-  { id: 'pen', name: 'Generic Pen Plotter', kind: 'pen', header: 'G90', footer: 'M2', toolOn: '', toolOff: '', safeZ: 5, workZ: 0, passDepth: 1, feed: 1500, travel: 3000 },
-  { id: 'laser', name: 'Generic XY Laser-Style', kind: 'laser', header: 'G90', footer: 'M2', toolOn: '', toolOff: '', safeZ: 0, workZ: 0, passDepth: 1, feed: 1200, travel: 3000 },
+  { id: 'cnc', name: 'Generic CNC Router', kind: 'cnc', postProcessorId: 'generic-cnc', header: 'G90\nG17', footer: 'M2', toolOn: '', toolOff: '', safeZ: 5, workZ: -1, passDepth: 1, feed: 600, travel: 1800 },
+  // These two legacy presets remain generic so existing custom command behavior
+  // and saved selections do not silently acquire controller-specific semantics.
+  { id: 'pen', name: 'Generic Pen Plotter', kind: 'pen', postProcessorId: 'generic', header: 'G90', footer: 'M2', toolOn: '', toolOff: '', safeZ: 5, workZ: 0, passDepth: 1, feed: 1500, travel: 3000 },
+  { id: 'laser', name: 'Generic XY Laser-Style', kind: 'laser', postProcessorId: 'generic', header: 'G90', footer: 'M2', toolOn: '', toolOff: '', safeZ: 0, workZ: 0, passDepth: 1, feed: 1200, travel: 3000 },
+  { id: 'grbl-pen', name: 'Generic GRBL Pen Plotter', kind: 'pen', postProcessorId: 'grbl-pen', header: '', footer: 'M2', toolOn: '', toolOff: '', safeZ: 0, workZ: 0, passDepth: 1, feed: 1500, travel: 3000 },
+  { id: 'grbl-laser', name: 'Generic GRBL / FluidNC Laser', kind: 'laser', postProcessorId: 'grbl-laser', header: '', footer: 'M2', toolOn: '', toolOff: 'M5', safeZ: 0, workZ: 0, passDepth: 1, feed: 1200, travel: 3000 },
+  { id: 'marlin-pen', name: 'Generic Marlin Pen Plotter', kind: 'pen', postProcessorId: 'marlin-pen', header: '', footer: 'M2', toolOn: '', toolOff: '', safeZ: 0, workZ: 0, passDepth: 1, feed: 1500, travel: 3000 },
+  { id: 'generic', name: 'Custom / Generic G-code', kind: 'pen', postProcessorId: 'generic', header: '', footer: 'M2', toolOn: '', toolOff: '', safeZ: 0, workZ: 0, passDepth: 1, feed: 1200, travel: 2400 },
 ];
 
 export const defaults: Settings = {
@@ -91,8 +98,9 @@ const safeProfile = (value: unknown): MachineProfile | null => {
   const id = text(value.id, '', 128);
   const name = text(value.name, '', 128);
   if (!id || !name) return null;
+  const postProcessorId = migratePostProcessorId(value.postProcessorId);
   return {
-    id, name, kind,
+    id, name, kind: kindForProcessor(postProcessorId, kind), postProcessorId,
     header: text(value.header, ''),
     footer: text(value.footer, ''),
     toolOn: text(value.toolOn, ''),
@@ -175,11 +183,19 @@ export function configurationErrors(settings: Settings, kind: MachineProfile['ki
   return [...new Set(errors)];
 }
 
-export function profileErrors(profile: MachineProfile): string[] {
+export function canonicalProfileErrors(profile: MachineProfile): string[] {
   const errors: string[] = [];
   if (profile.kind !== 'cnc' && profile.kind !== 'pen' && profile.kind !== 'laser') errors.push('Machine profile has an unknown kind.');
-  if (!profile.name.trim()) errors.push('Machine profile has no name.');
   if (profile.kind === 'cnc' && (!Number.isFinite(profile.passDepth) || profile.passDepth <= 0 || profile.passDepth > MAX_Z_MAGNITUDE)) errors.push('Machine profile pass depth must be positive and reasonably bounded.');
+  return errors;
+}
+
+export function profileErrors(profile: MachineProfile): string[] {
+  const errors = canonicalProfileErrors(profile);
+  if (!profile.name.trim()) errors.push('Machine profile has no name.');
+  const processor = getPostProcessor(profile.postProcessorId);
+  if (!processor) errors.push('Machine profile selects an unknown post-processor.');
+  else if (processor.expectedKind && processor.expectedKind !== profile.kind) errors.push(`The ${processor.name} post-processor is incompatible with this machine profile kind.`);
   if (!Number.isFinite(profile.feed) || !Number.isFinite(profile.travel) || profile.feed <= 0 || profile.travel <= 0) errors.push('Machine profile feed rates must be positive.');
   if (profile.toolOn.trim() && !profile.toolOff.trim()) errors.push('A tool-off command is required when a tool-on command is configured.');
   return errors;

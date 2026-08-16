@@ -12,7 +12,7 @@ Try it online: https://imagetogcode.ca/
 * Raster scanline, contour/outline, grayscale engraving, and SVG centerline conversion
 * Interactive 2D toolpath preview with work-area boundary, travel vs working moves, zoom, and playback
 * Configurable dimensions, origins, offsets, axis inversion, feeds, Z depths, passes, scan spacing, and image filters
-* Editable/persisted machine profiles for generic CNC, pen, and laser-style workflows
+* Capability-driven machine profiles with Generic, GRBL pen, GRBL/FluidNC laser, Marlin pen, and Generic CNC post-processors
 * G-code inspector with line numbers, search, copy, and `.gcode` download
 * Bounds and configuration warnings plus generated movement/time statistics
 
@@ -27,7 +27,7 @@ Run quality checks with `npm test`, `npm run typecheck`, `npm run lint`, and cre
 
 ## Architecture
 
-`src/core/image.ts` processes raster pixels and `conversion.ts` converts them to typed geometry. Native SVG follows a separate secure path: `src/vector/parseSvg.ts` copies supported XML geometry into a DOM-free typed model, then `flatten.ts` adaptively converts curves using the physical Toolpath Detail tolerance in the worker. Both sources then share toolpath optimization, packed canonical movements, coordinate transforms, statistics, preflight, preview, and the `core/gcode.ts` serializer. React UI code orchestrates state and rendering; uploaded source data is not persisted.
+`src/core/image.ts` processes raster pixels and `conversion.ts` converts them to typed geometry. Native SVG follows a separate secure path: `src/vector/parseSvg.ts` copies supported XML geometry into a DOM-free typed model, then `flatten.ts` adaptively converts curves using the physical Toolpath Detail tolerance in the worker. Both sources then share toolpath optimization, coordinate transforms, packed canonical movements, statistics, and preview. Trusted modules in `src/postprocessors/` validate the selected machine capabilities and translate those canonical movements into controller-specific G-code on demand in the worker. React UI code orchestrates state and rendering; uploaded source data is not persisted.
 
 ### Native SVG support
 
@@ -43,11 +43,13 @@ This project was built using a combination of human-written code and AI-assisted
 
 ## Machine profiles and export
 
-Profiles intentionally do not assume spindle, laser, servo, or homing commands. Their header, footer, tool-on, and tool-off fields are designed to be configured for the actual machine. Custom profiles and settings persist in localStorage. Exports use `source-name-mode.gcode`.
+A post-processor defines controller syntax and capabilities; a machine profile supplies the user's work area, feeds, and commands. Built-in processors are trusted bundled code—saved data cannot inject executable plugins. Older custom profiles migrate to the conservative Generic processor while retaining their command strings. Custom profiles and settings persist in localStorage. Exports use `source-name-mode.gcode`. See [Machine output and post-processors](docs/machine-output.md).
+
+Pen and laser processors require explicit user-configured on/off commands. Generic CNC always generates standalone safe-Z retraction before XY rapid travel, but never silently starts a spindle. No processor assumes homing has occurred.
 
 ## Safety
 
-**Generated G-code must be inspected and machine configuration verified before use.** Toolpath visualization cannot account for workholding, fixtures, firmware behavior, tool selection, or machine limits. Incorrect commands can damage equipment or cause injury. Never run unreviewed output on a real machine.
+**Generated G-code must be inspected and machine configuration verified before use.** Machine-aware post-processing and preflight improve controller-specific output and validation but do not guarantee safe real-machine operation. Toolpath visualization cannot account for workholding, fixtures, firmware behavior, tool selection, or machine limits. Incorrect commands can damage equipment or cause injury. Never run unreviewed output on a real machine.
 
 ## Limitations and roadmap
 

@@ -59,7 +59,7 @@ describe('connected contour tracing', () => {
 
 describe('machine validation and profiles', () => {
   it('includes safe generic profiles without implicit tool-on commands', () => {
-    expect(profiles.map((profile) => profile.kind)).toEqual(['cnc', 'pen', 'laser']);
+    expect(profiles.map((profile) => profile.postProcessorId)).toEqual(['generic-cnc', 'generic', 'generic', 'grbl-pen', 'grbl-laser', 'marlin-pen', 'generic']);
     expect(profiles.every((profile) => profile.toolOn === '')).toBe(true);
   });
   it('rejects malformed, unsafe, and out-of-bounds configurations', () => {
