@@ -1,0 +1,8 @@
+Plotter Simplex, Plotter Script, and Plotter Technical
+
+Copyright (c) 2026 image-to-gcode contributors
+
+These original vector stroke-font definitions are licensed under the MIT License,
+the same license as this repository. They are single-line centerline fonts: each
+stored stroke is traversed once. They are not derived from or converted from an
+outline font. See the repository root LICENSE file for the full license text.

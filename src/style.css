@@ -317,6 +317,59 @@ textarea {
   font-size: 11px;
 }
 
+.text-controls textarea {
+  min-height: 150px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.font-sample {
+  width: 100%;
+  height: 48px;
+  margin: 2px 0 5px;
+  padding: 5px;
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #0e1216;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: .45;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.document-pages,
+.inline-warning,
+.page-picker {
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.inline-warning,
+.page-picker.has-overflow {
+  border-color: #705d35;
+  color: var(--warning);
+  background: #241f16;
+}
+
+.page-picker b,
+.page-picker span {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.page-picker > div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
 .placement-actions {
   display: flex;
   flex-wrap: wrap;
