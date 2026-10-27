@@ -1,11 +1,12 @@
 import type { ToolpathStats } from '../core/gcode';
 import type { Move } from '../core/types';
 import type { WorkerProgressMessage, WorkerStage, WorkerTimings } from './progress';
+import type { TextPageInfo } from '../text/types';
 
 export type WorkerErrorStage = 'run' | 'preview' | 'serialize';
 export type WorkerMessage =
   | WorkerProgressMessage
-  | { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number }
+  | { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number; textPage?: TextPageInfo }
   | { type: 'processed-preview-result'; id: number; preview: { width: number; height: number; data: ArrayBuffer } }
   | { type: 'preview-result'; id: number; requestId: number; moves: Move[]; timing: { endMinutes: ArrayBuffer; totalMinutes: number }; segments: number; previewMs: number }
   | { type: 'gcode-result'; id: number; requestId: number; outputKey: string; code: string; characters: number; lines: number }
@@ -97,6 +98,13 @@ function validWarnings(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= 10_000 && value.every((message) => typeof message === 'string' && message.length <= 16_384);
 }
 
+function validTextPage(value: unknown): boolean {
+  return value === undefined || (record(value)
+    && integer(value.page) && integer(value.pageCount) && value.pageCount > 0 && value.page < value.pageCount
+    && integer(value.lineCount) && typeof value.flowed === 'boolean'
+    && validWarnings(value.unsupportedCharacters) && validWarnings(value.warnings));
+}
+
 function validProcessedPreview(value: unknown): boolean {
   if (!record(value) || !integer(value.width) || !integer(value.height) || value.width === 0 || value.height === 0 || !(value.data instanceof ArrayBuffer)) return false;
   const pixels = value.width * value.height;
@@ -112,7 +120,7 @@ export function isWorkerMessage(value: unknown): value is WorkerMessage {
       && (value.requestId === undefined || integer(value.requestId));
   }
   if (value.type === 'result') {
-    return validWarnings(value.warnings) && validStats(value.stats) && validTimings(value.timings)
+    return validWarnings(value.warnings) && validStats(value.stats) && validTimings(value.timings) && validTextPage(value.textPage)
       && value.timings.movementCount === value.stats.movementCount && finite(value.sentAt);
   }
   if (value.type === 'processed-preview-result') return validProcessedPreview(value.preview);

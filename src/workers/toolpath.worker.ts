@@ -12,13 +12,16 @@ import type { VectorDocument } from '../vector/model';
 import { packedMoveBytes, packMoves, timedPreviewFromPacked, type PackedMoves } from './packedMoves';
 import { overallProgress, stageLabel, type WorkerProgressMessage, type WorkerStage, type WorkerTimings } from './progress';
 import { isSerializeGcodeRequest, type SerializeGcodeRequest } from './requests';
+import { layoutText } from '../text/layout';
+import type { TextPageInfo, TextSource } from '../text/types';
 
 type RasterSource = { kind: 'raster'; pixels: { width: number; height: number; data: ArrayBuffer } };
 type VectorSource = { kind: 'vector'; document: VectorDocument };
-type RunJobRequest = { type: 'run'; id: number; source: RasterSource | VectorSource; settings: Settings; profile: MachineProfile; mode: ConversionMode };
+type TextJobSource = { kind: 'text'; document: TextSource };
+type RunJobRequest = { type: 'run'; id: number; source: RasterSource | VectorSource | TextJobSource; settings: Settings; profile: MachineProfile; mode: ConversionMode };
 type PreviewJobRequest = { type: 'prepare-preview'; id: number; requestId: number; quality: PreviewQuality };
 type JobRequest = RunJobRequest | PreviewJobRequest | SerializeGcodeRequest;
-type JobResult = { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number };
+type JobResult = { type: 'result'; id: number; warnings: string[]; stats: ToolpathStats; timings: WorkerTimings; sentAt: number; textPage?: TextPageInfo };
 type ProcessedPreviewResult = { type: 'processed-preview-result'; id: number; preview: { width: number; height: number; data: ArrayBuffer } };
 type PreviewResult = { type: 'preview-result'; id: number; requestId: number; moves: ReturnType<typeof timedPreviewFromPacked>['moves']; timing: { endMinutes: ArrayBuffer; totalMinutes: number }; segments: number; previewMs: number };
 type GcodeResult = { type: 'gcode-result'; id: number; requestId: number; outputKey: string; code: string; characters: number; lines: number };
@@ -26,7 +29,7 @@ type JobError = { type: 'error'; id: number; stage: 'run' | 'preview' | 'seriali
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 let completed: { id: number; toolpath: Toolpath; settings: Settings; profile: MachineProfile; packed: PackedMoves } | null = null;
 
-function reporter(id: number, requestId?: number, vectorSource = false) {
+function reporter(id: number, requestId?: number, vectorSource = false, textSource = false) {
   let lastProgressAt = -Infinity;
   let lastStage: WorkerStage | null = null;
   let lastValue = -1;
@@ -37,7 +40,9 @@ function reporter(id: number, requestId?: number, vectorSource = false) {
     if (stage === lastStage && value === lastValue) return;
     if (stage === lastStage && stageProgress < 1 && now - lastProgressAt < 40) return;
     lastProgressAt = now; lastStage = stage; lastValue = value;
-    const label = vectorSource && stage === 'image' ? 'Reading SVG geometry…'
+    const label = textSource && stage === 'image' ? 'Reading document text…'
+      : textSource && stage === 'extract' ? 'Laying out writing paths…'
+      : vectorSource && stage === 'image' ? 'Reading SVG geometry…'
       : vectorSource && stage === 'reduce' ? 'Preparing vector geometry…'
         : vectorSource && stage === 'extract' ? 'Flattening SVG curves…'
           : stageLabel[stage];
@@ -55,7 +60,7 @@ function countLines(code: string): number {
 function run(job: RunJobRequest) {
   completed = null;
   const started = performance.now();
-  const report = reporter(job.id, undefined, job.source.kind === 'vector');
+  const report = reporter(job.id, undefined, job.source.kind === 'vector', job.source.kind === 'text');
   try {
     const errors = [...configurationErrors(job.settings, job.profile.kind), ...profileErrors(job.profile)];
     if (errors.length) throw new Error(errors[0]);
@@ -68,10 +73,11 @@ function run(job: RunJobRequest) {
     let sourceSegmentCount = 0;
     let flattenedPointCount = 0;
     let sourceWarnings: string[] = [];
+    let textPage: TextPageInfo | undefined;
     let toolpath: Toolpath;
 
     if (job.source.kind === 'raster') {
-      if (job.mode === 'vector') throw new Error('A raster source cannot use native vector conversion.');
+      if (job.mode === 'vector' || job.mode === 'text') throw new Error('A raster source cannot use vector or text conversion.');
       report('image', 0, 1);
       const imageStart = performance.now();
       const processed = processImage(
@@ -102,7 +108,7 @@ function run(job: RunJobRequest) {
       });
       if (orderingStarted) orderingMs = performance.now() - orderingStarted;
       else extractionMs = performance.now() - extractionStarted;
-    } else {
+    } else if (job.source.kind === 'vector') {
       if (job.mode !== 'vector') throw new Error('An SVG source must use native vector conversion.');
       report('image', 1, 1);
       report('reduce', 1, 1);
@@ -117,6 +123,20 @@ function run(job: RunJobRequest) {
       toolpath = optimizeToolpath(flattened.toolpath, job.settings).toolpath;
       report('order', flattened.toolpath.paths.length, flattened.toolpath.paths.length);
       orderingMs = performance.now() - orderingStarted;
+    } else {
+      if (job.mode !== 'text') throw new Error('A text source must use Text / Document conversion.');
+      report('image', 1, 1); report('reduce', 1, 1);
+      const extractionStarted = performance.now();
+      const laidOut = layoutText(job.source.document);
+      toolpath = laidOut.toolpath;
+      textPage = laidOut.info;
+      sourceWarnings = laidOut.info.warnings.slice();
+      sourceSegmentCount = toolpath.paths.length;
+      for (const path of toolpath.paths) flattenedPointCount += path.points.length;
+      extractionMs = performance.now() - extractionStarted;
+      // Character and stroke order are semantically meaningful for writing.
+      // Do not reorder or reverse these paths.
+      report('extract', 1, 1); report('order', 1, 1);
     }
     report('order', 1, 1);
     let pointCount = 0;
@@ -141,7 +161,8 @@ function run(job: RunJobRequest) {
     completed = { id: job.id, toolpath, settings: job.settings, profile: job.profile, packed };
     if (removedComponents) built.warnings.push(`Noise cleanup removed ${removedComponents.toLocaleString()} isolated artifact${removedComponents === 1 ? '' : 's'}.`);
     built.warnings.push(...sourceWarnings);
-    worker.postMessage({ type: 'result', id: job.id, warnings: built.warnings, stats, timings: { imageMs, reductionMs, extractionMs, orderingMs, movementMs, gcodeMs: 0, statisticsMs, totalMs: performance.now() - started, pathCount: toolpath.paths.length, pointCount, movementCount, gcodeCharacters: 0, packedMovementBytes: packedBytes, transferBytes: processedPreviewBytes, sourceSegmentCount, flattenedPointCount }, sentAt: performance.timeOrigin + performance.now() } satisfies JobResult);
+    const warnings = built.warnings.length <= 10_000 ? built.warnings : [...built.warnings.slice(0, 9_999), `${(built.warnings.length - 9_999).toLocaleString()} additional warnings were omitted.`];
+    worker.postMessage({ type: 'result', id: job.id, warnings, stats, timings: { imageMs, reductionMs, extractionMs, orderingMs, movementMs, gcodeMs: 0, statisticsMs, totalMs: performance.now() - started, pathCount: toolpath.paths.length, pointCount, movementCount, gcodeCharacters: 0, packedMovementBytes: packedBytes, transferBytes: processedPreviewBytes, sourceSegmentCount, flattenedPointCount }, sentAt: performance.timeOrigin + performance.now(), ...(textPage ? { textPage } : {}) } satisfies JobResult);
   } catch (error) {
     worker.postMessage({ type: 'error', id: job.id, stage: 'run', message: error instanceof Error ? error.message : 'Toolpath processing failed.' } satisfies JobError);
   }
