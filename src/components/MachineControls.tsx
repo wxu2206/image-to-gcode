@@ -21,7 +21,7 @@ export function MachineControls({ settings, profile, rasterSource, onSetting, on
     kind: kindForProcessor(postProcessorId, profile.kind),
   });
 
-  return <>
+  return <section className="machine-controls" aria-labelledby="machine-controls-title">
     <label>Controller / output
       <select aria-label="Controller / output" value={profile.postProcessorId} onChange={(event) => selectProcessor(event.target.value as PostProcessorId)}>
         {!getPostProcessor(profile.postProcessorId) && <option value={profile.postProcessorId}>Unavailable processor — select another</option>}
@@ -30,7 +30,7 @@ export function MachineControls({ settings, profile, rasterSource, onSetting, on
       <small className="field-help">Controls how canonical movements are translated into controller-specific G-code.</small>
     </label>
 
-    <h3>Machine</h3>
+    <h3 id="machine-controls-title">Machine</h3>
     <div className="grid">
       <label>Units<select value={settings.units} onChange={(event) => onUnits(event.target.value as Settings['units'])}><option value="mm">Millimeters</option><option value="in">Inches</option></select></label>
       <label>Work area width<input type="number" value={settings.workWidth} step="1" onChange={(event) => onSetting('workWidth', number(event))} /></label>
@@ -72,5 +72,5 @@ export function MachineControls({ settings, profile, rasterSource, onSetting, on
       <label>Shutdown<textarea value={profile.footer} maxLength={16_384} onChange={(event) => onProfile({ footer: event.target.value })} /></label>
       <small>Custom commands are not fully simulated by preflight.</small>
     </details>
-  </>;
+  </section>;
 }
