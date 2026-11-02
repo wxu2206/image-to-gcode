@@ -1,5 +1,5 @@
 import type { Toolpath } from '../core/types';
-import { characterAdvance, getStrokeFont, glyphPaths, supportedCharacter } from './fonts';
+import { characterAdvance, glyphPaths, hasStrokeFont, STROKE_FONT_ASCENT, STROKE_FONT_HEIGHT, supportedCharacter } from './fonts';
 import { PAGE_BREAK, type TextPageInfo, type TextSource } from './types';
 
 export const TEXT_LIMITS = { maxCharacters: 500_000, maxPages: 500, maxPaths: 250_000, maxLines: 50_000 } as const;
@@ -21,7 +21,7 @@ export function validateTextSource(source: TextSource): void {
   const { marginTopMm, marginRightMm, marginBottomMm, marginLeftMm, pageWidthMm, pageHeightMm } = source.layout;
   if ([marginTopMm, marginRightMm, marginBottomMm, marginLeftMm].some((value) => value < 0)) throw new Error('Margins cannot be negative.');
   if (marginLeftMm + marginRightMm >= pageWidthMm || marginTopMm + marginBottomMm >= pageHeightMm) throw new Error('Margins leave no usable writing area.');
-  if (!getStrokeFont(source.layout.fontId)) throw new Error('The selected writing font is unavailable.');
+  if (!hasStrokeFont(source.layout.fontId)) throw new Error('The selected writing font is unavailable.');
 }
 
 function measure(text: string, source: TextSource): number {
@@ -30,29 +30,38 @@ function measure(text: string, source: TextSource): number {
   return Math.max(0, width - source.layout.letterSpacingMm);
 }
 
-function breakLongWord(word: string, maximum: number, source: TextSource): string[] {
-  const chunks: string[] = []; let current = '';
+function breakLongWord(word: string, maximum: number, source: TextSource): Line[] {
+  const chunks: Line[] = []; let current = ''; let currentWidth = 0;
   for (const character of word) {
-    const candidate = current + character;
-    if (current && measure(candidate, source) > maximum) { chunks.push(current); current = character; }
-    else current = candidate;
+    const characterWidth = measure(character, source);
+    if (characterWidth > maximum) throw new Error('The usable writing width is too narrow for the selected text size.');
+    const candidateWidth = current ? currentWidth + source.layout.letterSpacingMm + characterWidth : characterWidth;
+    if (current && candidateWidth > maximum) {
+      chunks.push({ text: current, width: currentWidth });
+      current = character;
+      currentWidth = characterWidth;
+    } else {
+      current += character;
+      currentWidth = candidateWidth;
+    }
   }
-  if (current || !chunks.length) chunks.push(current);
+  if (current || !chunks.length) chunks.push({ text: current, width: currentWidth });
   return chunks;
 }
 
 function wrapParagraph(paragraph: string, maximum: number, source: TextSource): Line[] {
   if (!paragraph) return [{ text: '', width: 0 }];
-  const words = paragraph.replace(/\t/g, '    ').split(/ +/);
-  const lines: Line[] = []; let current = '';
-  const push = () => { lines.push({ text: current, width: measure(current, source) }); current = ''; };
-  for (const word of words) {
-    const chunks = measure(word, source) > maximum ? breakLongWord(word, maximum, source) : [word];
+  const tokens = paragraph.replace(/\t/g, '    ').match(/ +|[^ ]+/g) ?? [];
+  const lines: Line[] = []; let current = ''; let currentWidth = 0;
+  const push = () => { lines.push({ text: current, width: currentWidth }); current = ''; currentWidth = 0; };
+  for (const token of tokens) {
+    const tokenWidth = measure(token, source);
+    const chunks = tokenWidth > maximum ? breakLongWord(token, maximum, source) : [{ text: token, width: tokenWidth }];
     for (const chunk of chunks) {
-      const candidate = current ? `${current} ${chunk}` : chunk;
-      if (current && measure(candidate, source) > maximum) push();
-      if (!current && measure(chunk, source) > maximum) lines.push({ text: chunk, width: measure(chunk, source) });
-      else current = current ? `${current} ${chunk}` : chunk;
+      const candidateWidth = current ? currentWidth + source.layout.letterSpacingMm + chunk.width : chunk.width;
+      if (current && candidateWidth > maximum) push();
+      currentWidth = current ? currentWidth + source.layout.letterSpacingMm + chunk.width : chunk.width;
+      current += chunk.text;
     }
   }
   if (current || !lines.length) push();
@@ -67,8 +76,9 @@ export function layoutText(source: TextSource): LayoutResult {
   const lineAdvance = layout.fontSizeMm * layout.lineSpacing;
   // Font data includes small descenders (comma, semicolon, Q). Include them in
   // pagination so even a zero bottom margin never clips the last writing line.
-  const glyphHeight = layout.fontSizeMm * (16 / 14);
-  const linesPerPage = Math.max(1, Math.floor((usableHeight - glyphHeight) / lineAdvance) + 1);
+  const glyphHeight = layout.fontSizeMm * STROKE_FONT_HEIGHT;
+  if (glyphHeight > usableHeight) throw new Error('The usable writing height is too short for the selected text size.');
+  const linesPerPage = Math.floor((usableHeight - glyphHeight) / lineAdvance) + 1;
   const logicalPages = source.text.replace(/\r\n?/g, '\n').split(PAGE_BREAK);
   const pages: Line[][] = [];
   for (const logicalPage of logicalPages) {
@@ -91,10 +101,18 @@ export function layoutText(source: TextSource): LayoutResult {
     let x = layout.marginLeftMm;
     if (layout.alignment === 'center') x += (usableWidth - line.width) / 2;
     if (layout.alignment === 'right') x += usableWidth - line.width;
-    const baseline = layout.marginTopMm + layout.fontSizeMm + lineIndex * lineAdvance;
-    for (let characterIndex = 0; characterIndex < line.text.length; characterIndex += 1) {
-      const character = line.text[characterIndex];
-      paths.push(...glyphPaths(character, layout.fontId, layout.fontSizeMm, x, baseline, `p${source.page}-l${lineIndex}-c${characterIndex}`));
+    const baseline = layout.marginTopMm + layout.fontSizeMm * STROKE_FONT_ASCENT + lineIndex * lineAdvance;
+    const characters = Array.from(line.text);
+    for (let characterIndex = 0; characterIndex < characters.length; characterIndex += 1) {
+      const character = characters[characterIndex];
+      const strokes = glyphPaths(character, layout.fontId, layout.fontSizeMm, x, baseline, `p${source.page}-l${lineIndex}-c${characterIndex}`);
+      if (strokes.some((stroke) => stroke.points.some((point) => point.x < layout.marginLeftMm - 1e-9
+        || point.x > layout.pageWidthMm - layout.marginRightMm + 1e-9
+        || point.y < layout.marginTopMm - 1e-9
+        || point.y > layout.pageHeightMm - layout.marginBottomMm + 1e-9))) {
+        throw new Error('Writing geometry exceeds the usable page area. Reduce text size or adjust spacing and margins.');
+      }
+      paths.push(...strokes);
       if (paths.length > TEXT_LIMITS.maxPaths) throw new Error('Writing geometry exceeds 250,000 strokes. Split the document or increase text size.');
       x += characterAdvance(character, layout.fontId, layout.fontSizeMm, layout.letterSpacingMm);
     }

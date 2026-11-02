@@ -28,10 +28,10 @@ export function TextControls({ text, layout, page, pageCount, sourcePages, impor
   return <section className="text-controls" aria-labelledby="text-controls-title">
     <h3 id="text-controls-title">Text / document</h3>
     <div className="control-group text-editor-group">
-      <label>Editable plain text<textarea aria-label="Document text" rows={10} maxLength={500_000} value={text} placeholder="Type text here, or import a DOCX / text PDF…" onChange={(event) => onText(event.target.value)} /></label>
+      <label>Editable plain text<textarea rows={10} maxLength={500_000} value={text} placeholder="Type text here, or import a DOCX / text PDF…" onChange={(event) => onText(event.target.value)} /></label>
       <small className="field-help">Documents stay local and are extracted as plain text. The selected writing font replaces document fonts; exact formatting is not preserved. Scanned PDFs require OCR. Legacy .doc files must be converted to .docx.</small>
       {sourcePages > 1 && <div className="document-pages">Imported source: {sourcePages} pages. Visible “DOCUMENT PAGE BREAK” markers preserve boundaries.</div>}
-      {importWarnings.map((warning) => <div className="inline-warning" key={warning}>{warning}</div>)}
+      {importWarnings.length > 0 && <div role="status" aria-live="polite" aria-label="Document import notices">{importWarnings.map((warning) => <div className="inline-warning" key={warning}>{warning}</div>)}</div>}
     </div>
     <div className="control-group font-controls">
       <h4 className="control-subheading">Writing style</h4>

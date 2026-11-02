@@ -46,6 +46,10 @@ export const strokeFonts: StrokeFont[] = [
   { id: 'plotter-technical', name: 'Plotter Technical', category: 'single-line', description: 'Wide single-line technical lettering', widthScale: 0.84, slant: 0 },
 ];
 
+export const STROKE_FONT_ASCENT = 16 / 14;
+export const STROKE_FONT_DESCENT = 2 / 14;
+export const STROKE_FONT_HEIGHT = STROKE_FONT_ASCENT + STROKE_FONT_DESCENT;
+export const hasStrokeFont = (id: string) => strokeFonts.some((font) => font.id === id);
 export const getStrokeFont = (id: string) => strokeFonts.find((font) => font.id === id) ?? strokeFonts[0];
 export const supportedCharacter = (character: string) => character === ' ' || Boolean(glyphs[character] ?? glyphs[character.toUpperCase()]);
 
@@ -62,7 +66,7 @@ export function characterAdvance(character: string, fontId: string, fontSizeMm: 
   const found = glyphFor(character);
   const base = found?.glyph.advance ?? 8;
   const font = getStrokeFont(fontId);
-  return (base / 14 * font.widthScale + Math.max(0, font.slant)) * fontSizeMm + letterSpacingMm;
+  return (base / 14 * font.widthScale + Math.max(0, font.slant) * STROKE_FONT_ASCENT) * fontSizeMm + letterSpacingMm;
 }
 
 export function glyphPaths(character: string, fontId: string, fontSizeMm: number, x: number, baselineY: number, idPrefix: string): Path[] {

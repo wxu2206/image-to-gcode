@@ -30,7 +30,7 @@ function splitFooter(profile: MachineProfile, safe: boolean): { beforeShutdown: 
   if (!safe) return { beforeShutdown: [], terminal: lines };
   const terminal: string[] = [];
   const beforeShutdown: string[] = [];
-  for (const line of lines) (/^(?:M2|M30)(?:\s|$)/i.test(line) ? terminal : beforeShutdown).push(line);
+  for (const line of lines) (/^(?:N\d+\s*)?(?:M0?2|M30)(?=\s|$|[;(])/i.test(line) ? terminal : beforeShutdown).push(line);
   return { beforeShutdown, terminal };
 }
 
@@ -95,6 +95,11 @@ export function serializeLinearMoves(moves: readonly Move[], context: PostProces
   }
 
   const footer = splitFooter(profile, policy.safeCustomFooter);
+  // Never let a footer parking/coolant/custom motion command run with the
+  // generated tool state still active. Custom footer commands are opaque, so
+  // force the safe state again after them before any terminal program command.
+  emitCustom(profile.toolOff, 'off', toolState.value !== 'off');
+  if (footer.beforeShutdown.length) reassertModes();
   lines.push(...footer.beforeShutdown);
   if (footer.beforeShutdown.length) toolState.value = 'unknown';
   emitCustom(profile.toolOff, 'off', toolState.value !== 'off');

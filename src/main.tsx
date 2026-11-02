@@ -6,6 +6,9 @@ import { TextControls } from './components/TextControls';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { PreflightDialog, type PreflightExportAction } from './components/PreflightDialog';
 import { MachineControls } from './components/MachineControls';
+import { NumberInput } from './components/NumberInput';
+import { JobWarnings } from './components/JobWarnings';
+import { visibleGcodeLines } from './utils/gcodeSearch';
 import { loadProfiles, loadSettings, profiles as builtInProfiles } from './core/machine';
 import { estimateComplexity } from './core/complexity';
 import type { ToolpathStats } from './core/gcode';
@@ -19,7 +22,7 @@ import { transformedBounds } from './core/transform';
 import { machinePoint } from './core/geometry';
 import { authorizeExport, buildPreflight } from './core/exportReview';
 import { canonicalJobKey, isCurrentJobRevision, isCurrentRevision, outputJobKey } from './core/jobRevision';
-import { convertSettingsUnits } from './core/units';
+import { createSettingsUnitConverter } from './core/units';
 import { gcodeFilename } from './utils/filename';
 import { isWorkerMessage, type WorkerMessage } from './workers/messages';
 import { advancePlaybackMinutes, playbackPosition } from './visualization/playback';
@@ -42,15 +45,6 @@ const writeLocalSetting = (key: string, value: string) => {
 };
 const detailLabel = (value: number) => value <= 0.075 ? 'Ultra Fine' : value <= 0.1 ? 'Very Fine' : value <= 0.2 ? 'Fine' : value <= 0.35 ? 'Normal' : value <= 0.5 ? 'Coarse' : value <= 0.75 ? 'Fast' : 'Very Fast';
 const detailText = (value: number) => `${value < 0.1 ? value.toFixed(3) : value.toFixed(2)} mm`;
-const visibleGcodeLines = (code: string, search: string) => {
-  if (!search) return { lines: code.split('\n', 2_000), start: 1 };
-  const match = code.toLowerCase().indexOf(search.toLowerCase());
-  if (match < 0) return { lines: [] as string[], start: 1 };
-  const startOffset = code.lastIndexOf('\n', match) + 1;
-  let start = 1;
-  for (let index = 0; index < startOffset; index += 1) if (code.charCodeAt(index) === 10) start += 1;
-  return { lines: code.slice(startOffset).split('\n', 200), start };
-};
 const downloadGcodeDocument = (code: string, filename: string) => {
   const link = document.createElement('a');
   const url = URL.createObjectURL(new Blob([code], { type: 'text/x-gcode;charset=utf-8' }));
@@ -81,7 +75,7 @@ function PlacementControls({ settings, aspectRatio, update }: { settings: Settin
       : { [key]: value });
   };
   const reset = () => update({ outputHeight: settings.outputWidth / aspectRatio, offsetX: 0, offsetY: 0, rotationDeg: 0 });
-  return <><h3>Image placement</h3><div className="grid placement-grid"><label>Width ({settings.units})<input type="number" min="0.1" step="0.1" value={settings.outputWidth} onChange={(event) => resize('outputWidth', Number(event.target.value))} /></label><label>Height ({settings.units})<input type="number" min="0.1" step="0.1" value={settings.outputHeight} onChange={(event) => resize('outputHeight', Number(event.target.value))} /></label><label>X Position ({settings.units})<input type="number" step="0.1" value={settings.offsetX} onChange={(event) => update({ offsetX: Number(event.target.value) })} /></label><label>Y Position ({settings.units})<input type="number" step="0.1" value={settings.offsetY} onChange={(event) => update({ offsetY: Number(event.target.value) })} /></label><label>Rotation (°)<input type="number" min="-180" max="180" step="1" value={settings.rotationDeg} onChange={(event) => update({ rotationDeg: normalizeRotation(Number(event.target.value)) })} /></label></div><label className="check"><input type="checkbox" checked={settings.lockAspect} onChange={(event) => update({ lockAspect: event.target.checked })} /> Lock aspect ratio</label><div className="placement-actions"><button type="button" aria-label="Center image placement" onClick={() => update(centerTransform(settings))}>Center</button><button type="button" aria-label="Fit image to work area" onClick={() => update(fitTransformToWorkArea(settings, aspectRatio))}>Fit to work area</button><button type="button" aria-label="Rotate image left 90 degrees" title="Rotate image left 90 degrees" onClick={() => update({ rotationDeg: normalizeRotation(settings.rotationDeg - 90) })}>↶ 90°</button><button type="button" aria-label="Rotate image right 90 degrees" title="Rotate image right 90 degrees" onClick={() => update({ rotationDeg: normalizeRotation(settings.rotationDeg + 90) })}>↷ 90°</button><button type="button" aria-label="Reset image placement" onClick={reset}>Reset placement</button></div></>;
+  return <><h3>Image placement</h3><div className="grid placement-grid"><label>Width ({settings.units})<NumberInput min="0.1" step="0.1" value={settings.outputWidth} onValue={(value) => resize('outputWidth', value)} /></label><label>Height ({settings.units})<NumberInput min="0.1" step="0.1" value={settings.outputHeight} onValue={(value) => resize('outputHeight', value)} /></label><label>X Position ({settings.units})<NumberInput step="0.1" value={settings.offsetX} onValue={(value) => update({ offsetX: value })} /></label><label>Y Position ({settings.units})<NumberInput step="0.1" value={settings.offsetY} onValue={(value) => update({ offsetY: value })} /></label><label>Rotation (°)<NumberInput min="-180" max="180" step="1" value={settings.rotationDeg} onValue={(value) => update({ rotationDeg: normalizeRotation(value) })} /></label></div><label className="check"><input type="checkbox" checked={settings.lockAspect} onChange={(event) => update({ lockAspect: event.target.checked })} /> Lock aspect ratio</label><div className="placement-actions"><button type="button" aria-label="Center image placement" onClick={() => update(centerTransform(settings))}>Center</button><button type="button" aria-label="Fit image to work area" onClick={() => update(fitTransformToWorkArea(settings, aspectRatio))}>Fit to work area</button><button type="button" aria-label="Rotate image left 90 degrees" title="Rotate image left 90 degrees" onClick={() => update({ rotationDeg: normalizeRotation(settings.rotationDeg - 90) })}>↶ 90°</button><button type="button" aria-label="Rotate image right 90 degrees" title="Rotate image right 90 degrees" onClick={() => update({ rotationDeg: normalizeRotation(settings.rotationDeg + 90) })}>↷ 90°</button><button type="button" aria-label="Reset image placement" onClick={reset}>Reset placement</button></div></>;
 }
 
 export function App() {
@@ -127,6 +121,7 @@ export function App() {
   const [stats, setStats] = useState<ToolpathStats | null>(null);
   const [pipeline, setPipeline] = useState<PipelineProgress>(initialProgress);
   const [workerError, setWorkerError] = useState<string | null>(null);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
   const [timings, setTimings] = useState<RuntimeTimings | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -171,6 +166,18 @@ export function App() {
   const playbackMinuteRef = useRef(0);
   const playbackDrawRef = useRef<(minutes: number) => void>(() => {});
   const playbackUiUpdateRef = useRef(0);
+  const playbackGenerationRef = useRef(0);
+  const convertUnitsRef = useRef(createSettingsUnitConverter());
+  const resetPlayback = useCallback(() => {
+    playbackGenerationRef.current += 1;
+    cancelAnimationFrame(playbackFrameRef.current);
+    playbackFrameRef.current = 0;
+    playbackMinuteRef.current = 0;
+    playbackUiUpdateRef.current = 0;
+    playbackDrawRef.current(0);
+    setPlaying(false);
+    setPlaybackMinutes(0);
+  }, []);
 
   useEffect(() => writeLocalSetting('i2g-settings', JSON.stringify(settings)), [settings]);
   useEffect(() => writeLocalSetting('i2g-profile', profileId), [profileId]);
@@ -220,6 +227,7 @@ export function App() {
   const outputKey = useMemo(() => jobKey ? outputJobKey(jobKey, profile) : null, [jobKey, profile]);
   currentJobKeyRef.current = jobKey;
   currentOutputKeyRef.current = outputKey;
+  useEffect(() => { resetPlayback(); }, [jobKey, resetPlayback]);
   useEffect(() => {
     // A controller/command change can reuse canonical geometry, but any in-flight
     // or cached serialization belongs to the previous machine-output revision.
@@ -227,6 +235,7 @@ export function App() {
     pendingGcodeAction.current = null;
     setGcode(null);
     setGcodeState('idle');
+    setCopyNotice(null);
   }, [outputKey]);
   const processedKey = sourcePixels ? processingPreviewKey(sourceRevision, settings) : null;
   const currentProcessedPreview = isCurrentProcessedPreview(processedPreview, processedKey) ? processedPreview : null;
@@ -347,7 +356,10 @@ export function App() {
         const pending = pendingGcodeAction.current;
         pendingGcodeAction.current = null;
         if (!pending || pending.key !== message.outputKey) return;
-        if (pending.action === 'copy') void copyGcodeDocument(next.code).catch(() => setWorkerError('The browser could not copy G-code to the clipboard.'));
+        if (pending.action === 'copy') void copyGcodeDocument(next.code).then(() => {
+          setCopyNotice('G-code copied to the clipboard.');
+          setWorkerError((current) => current === 'The browser could not copy G-code to the clipboard.' ? null : current);
+        }, () => { setCopyNotice(null); setWorkerError('The browser could not copy G-code to the clipboard.'); });
         if (pending.action === 'download') {
           try {
             downloadGcodeDocument(next.code, gcodeFilename(mode === 'text' ? `${nameRef.current || 'document'}-page-${textPage + 1}` : nameRef.current, mode));
@@ -647,9 +659,13 @@ export function App() {
 
   useEffect(() => {
     if (!playing || !currentPreviewTiming || !currentPreviewMoves?.length || previewMode !== 'toolpath' || playbackTotalMinutes <= 0) return;
+    const generation = playbackGenerationRef.current;
+    const key = currentPreviewTiming.key;
+    let cancelled = false;
     const startedAt = performance.now();
     const startedMinutes = playbackMinuteRef.current;
     const animate = (now: number) => {
+      if (cancelled || generation !== playbackGenerationRef.current || key !== currentJobKeyRef.current) return;
       const next = advancePlaybackMinutes(startedMinutes, now - startedAt, playbackSpeed, playbackTotalMinutes);
       playbackMinuteRef.current = next;
       playbackDrawRef.current(next);
@@ -661,17 +677,22 @@ export function App() {
       playbackFrameRef.current = requestAnimationFrame(animate);
     };
     playbackFrameRef.current = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(playbackFrameRef.current);
+    return () => { cancelled = true; cancelAnimationFrame(playbackFrameRef.current); };
   }, [playing, currentPreviewMoves, currentPreviewTiming, previewMode, playbackSpeed, playbackTotalMinutes]);
 
   const upload = async (file: File) => {
     const uploadId = uploadRequestRef.current + 1;
     uploadRequestRef.current = uploadId;
-    jobRef.current += 1;
-    workerRef.current?.terminate(); documentRejectRef.current?.(); documentRejectRef.current = null; documentWorkerRef.current?.terminate();
-    setImage(null); setSourcePixels(null); setVectorDocument(null); setProcessedPreview(null); setJobResult(null); setPreviewMoves(null); setPreviewTiming(null); setGcode(null); setGcodeState('idle'); setStats(null); setTimings(null);
-    setPipeline({ label: 'Reading source…', value: 0, active: true });
-    setWorkerError(null); setName(''); setPlaying(false); playbackMinuteRef.current = 0; setPlaybackMinutes(0);
+    const hadSource = image !== null;
+    documentRejectRef.current?.(); documentRejectRef.current = null; documentWorkerRef.current?.terminate(); documentWorkerRef.current = null;
+    if (!hadSource) setPipeline({ label: 'Reading source…', value: 0, active: true });
+    setWorkerError(null);
+    const commitReplacement = () => {
+      jobRef.current += 1;
+      workerRef.current?.terminate(); workerRef.current = null;
+      setImage(null); setSourcePixels(null); setVectorDocument(null); setProcessedPreview(null); setJobResult(null); setPreviewMoves(null); setPreviewTiming(null); setGcode(null); setGcodeState('idle'); setStats(null); setTimings(null);
+      setName(''); setPlaying(false); playbackMinuteRef.current = 0; setPlaybackMinutes(0); setCopyNotice(null);
+    };
     try {
       if (documentMode) {
         const kind = validateDocumentFile(file);
@@ -684,16 +705,29 @@ export function App() {
           documentWorkerRef.current = worker;
           documentRejectRef.current = () => reject(new Error('Document import was cancelled.'));
           worker.onmessage = (event: MessageEvent<unknown>) => {
+            if (!event.data || typeof event.data !== 'object') {
+              worker.terminate(); if (documentWorkerRef.current === worker) documentWorkerRef.current = null; documentRejectRef.current = null;
+              reject(new Error('The document importer returned an invalid response.'));
+              return;
+            }
             const message = event.data as { type?: unknown; id?: unknown; document?: unknown; message?: unknown };
             if (message.id !== uploadId) return;
             worker.terminate(); if (documentWorkerRef.current === worker) documentWorkerRef.current = null; documentRejectRef.current = null;
-            if (message.type === 'result' && message.document && typeof message.document === 'object') resolve(message.document as { text: string; sourcePages: number; warnings: string[] });
-            else reject(new Error(typeof message.message === 'string' ? message.message : 'The document importer returned an invalid response.'));
+            const documentValue = message.document as { text?: unknown; sourcePages?: unknown; warnings?: unknown } | undefined;
+            if (message.type === 'result' && documentValue
+              && typeof documentValue.text === 'string' && documentValue.text.length <= 500_000
+              && Number.isInteger(documentValue.sourcePages) && Number(documentValue.sourcePages) >= 1 && Number(documentValue.sourcePages) <= 500
+              && Array.isArray(documentValue.warnings) && documentValue.warnings.length <= 10_000
+              && documentValue.warnings.every((warning) => typeof warning === 'string' && warning.length <= 16_384)) {
+              resolve(documentValue as { text: string; sourcePages: number; warnings: string[] });
+            } else reject(new Error(typeof message.message === 'string' ? message.message : 'The document importer returned an invalid response.'));
           };
-          worker.onerror = () => { worker.terminate(); documentRejectRef.current = null; reject(new Error('The local document importer stopped unexpectedly.')); };
-          worker.postMessage({ type: 'extract', id: uploadId, kind, data }, [data]);
+          worker.onerror = () => { worker.terminate(); if (documentWorkerRef.current === worker) documentWorkerRef.current = null; documentRejectRef.current = null; reject(new Error('The local document importer stopped unexpectedly.')); };
+          try { worker.postMessage({ type: 'extract', id: uploadId, kind, data }, [data]); }
+          catch { worker.terminate(); if (documentWorkerRef.current === worker) documentWorkerRef.current = null; documentRejectRef.current = null; reject(new Error('The document could not be sent to the local importer.')); }
         });
         if (uploadId !== uploadRequestRef.current) return;
+        commitReplacement();
         nameRef.current = file.name; setName(file.name); setTextDraft(extracted.text); setTextContent(extracted.text);
         setDocumentSourcePages(extracted.sourcePages); setDocumentWarnings(extracted.warnings); setTextPage(0); setTextPageInfo(null);
         setImage({ naturalWidth: textLayout.pageWidthMm, naturalHeight: textLayout.pageHeightMm }); setPreviewMode('toolpath'); setZoom(1); setPan({ x: 0, y: 0 });
@@ -702,9 +736,10 @@ export function App() {
       }
       if (inputFileKind(file) === 'svg') {
         const source = await readSvgFile(file);
-        const documentValue = parseSvgText(source);
         if (uploadId !== uploadRequestRef.current) return;
+        const documentValue = parseSvgText(source);
         const dimensions = { naturalWidth: documentValue.width, naturalHeight: documentValue.height };
+        commitReplacement();
         nameRef.current = file.name;
         setImage(dimensions); setVectorDocument(documentValue); setMode('vector'); setName(file.name); setPreviewMode('original'); setZoom(1); setPan({ x: 0, y: 0 });
         setSourceRevision((current) => current + 1);
@@ -714,10 +749,12 @@ export function App() {
         return;
       }
       const decoded = await decodeImageFile(file);
-      const pixels = readImagePixels(decoded);
+      if (uploadId !== uploadRequestRef.current) { decoded.removeAttribute('src'); return; }
       const dimensions = { naturalWidth: decoded.naturalWidth, naturalHeight: decoded.naturalHeight };
-      decoded.removeAttribute('src');
-      if (uploadId !== uploadRequestRef.current) return;
+      let pixels: ImageData;
+      try { pixels = readImagePixels(decoded); }
+      finally { decoded.removeAttribute('src'); }
+      commitReplacement();
       nameRef.current = file.name;
       setImage(dimensions); setSourcePixels(pixels); setMode(lastRasterModeRef.current); setName(file.name); setZoom(1); setPan({ x: 0, y: 0 });
       setSourceRevision((current) => current + 1);
@@ -726,20 +763,20 @@ export function App() {
         : current);
     } catch (error) {
       if (uploadId !== uploadRequestRef.current) return;
-      if (!documentMode) setMode(lastRasterModeRef.current);
-      setPipeline({ label: 'Source loading failed', value: 0, active: false });
-      setWorkerError(error instanceof Error ? error.message : 'The image could not be loaded.');
+      if (!hadSource) setPipeline({ label: 'Source loading failed', value: 0, active: false });
       throw error;
     }
   };
   const selectWorkflow = (workflow: 'artwork' | 'document') => {
+    resetPlayback();
     uploadRequestRef.current += 1; jobRef.current += 1; workerRef.current?.terminate(); documentRejectRef.current?.(); documentRejectRef.current = null; documentWorkerRef.current?.terminate();
-    setImage(null); setSourcePixels(null); setVectorDocument(null); setJobResult(null); setPreviewMoves(null); setPreviewTiming(null); setGcode(null); setStats(null); setTimings(null); setWorkerError(null); setTextPageInfo(null);
+    setImage(null); setSourcePixels(null); setVectorDocument(null); setProcessedPreview(null); setJobResult(null); setPreviewMoves(null); setPreviewTiming(null); setGcode(null); setGcodeState('idle'); setStats(null); setTimings(null); setWorkerError(null); setTextPageInfo(null);
+    setPipeline({ label: workflow === 'document' ? 'Waiting for text or document…' : 'Waiting for image or SVG…', value: 0, active: false });
     if (workflow === 'document') {
       setMode('text'); setPreviewMode('toolpath'); setName(textContent ? 'typed-text.txt' : '');
       setSettings((current) => ({ ...current, outputWidth: fromMillimetres(textLayout.pageWidthMm, current.units), outputHeight: fromMillimetres(textLayout.pageHeightMm, current.units), lockAspect: false }));
       if (textContent) setImage({ naturalWidth: textLayout.pageWidthMm, naturalHeight: textLayout.pageHeightMm });
-    } else { setMode(lastRasterModeRef.current); setName(''); setPipeline(initialProgress); }
+    } else { setMode(lastRasterModeRef.current); setName(''); }
     setSourceRevision((current) => current + 1);
   };
   const updateTextLayout = (change: Partial<TextLayoutSettings>) => {
@@ -753,7 +790,7 @@ export function App() {
   };
   const selectTextPage = (page: number) => { if (page < 0) return; setTextPage(page); setSourceRevision((current) => current + 1); setGcode(null); };
   const changeUnits = (units: Settings['units']) => {
-    const converted = convertSettingsUnits(settings, units);
+    const converted = convertUnitsRef.current(settings, units);
     setSettings(converted);
     setStablePlacement({
       outputWidth: converted.outputWidth,
@@ -918,7 +955,10 @@ export function App() {
       }
     }
     if (currentGcode) {
-      if (action === 'copy') void copyGcodeDocument(currentGcode.code).catch(() => setWorkerError('The browser could not copy G-code to the clipboard.'));
+      if (action === 'copy') void copyGcodeDocument(currentGcode.code).then(() => {
+        setCopyNotice('G-code copied to the clipboard.');
+        setWorkerError((current) => current === 'The browser could not copy G-code to the clipboard.' ? null : current);
+      }, () => { setCopyNotice(null); setWorkerError('The browser could not copy G-code to the clipboard.'); });
       if (action === 'download') saveGcode(currentGcode.code);
       return;
     }
@@ -947,11 +987,12 @@ export function App() {
         <div className="control-group source-controls">
           <label>Source workflow<select aria-label="Source workflow" value={documentMode ? 'document' : 'artwork'} onChange={(event) => selectWorkflow(event.target.value as 'artwork' | 'document')}><option value="artwork">Image / vector</option><option value="document">Text / document</option></select></label>
           {!documentMode && <label>Conversion mode<select value={mode} disabled={Boolean(vectorDocument)} onChange={(event) => { const next = event.target.value as Exclude<ConversionMode, 'vector' | 'text'>; lastRasterModeRef.current = next; setMode(next); }}>{vectorDocument ? <option value="vector">Native SVG vectors</option> : <><option value="raster">Raster / scanline</option><option value="contour">Contour / outline</option><option value="grayscale">Grayscale engraving</option></>}</select></label>}
-          <label>Machine profile<select value={profileId} onChange={(event) => setProfileId(event.target.value)}>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          <label>Output profile<select value={profileId} onChange={(event) => setProfileId(event.target.value)}>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           <button className="minor" type="button" onClick={duplicateProfile}>Duplicate profile</button>
+          <small className="field-help">Output profiles select controller commands. Work area, speeds, and Z limits remain job settings. Duplicate a built-in profile to save command edits.</small>
         </div>
-        {documentMode && <TextControls text={textDraft} layout={textLayout} page={textPage} pageCount={textPageInfo?.pageCount ?? 1} sourcePages={documentSourcePages} importWarnings={documentWarnings} onText={(value) => { setTextDraft(value); if (!name) { setName('typed-text.txt'); nameRef.current = 'typed-text.txt'; } }} onLayout={updateTextLayout} onPage={selectTextPage} />}
-        {documentMode && <details className="settings-disclosure page-position"><summary>Page position</summary><div className="grid"><label>X position ({settings.units})<input type="number" step="0.1" value={settings.offsetX} onChange={(event) => updateTransform({ offsetX: Number(event.target.value) })} /></label><label>Y position ({settings.units})<input type="number" step="0.1" value={settings.offsetY} onChange={(event) => updateTransform({ offsetY: Number(event.target.value) })} /></label></div></details>}
+        {documentMode && <TextControls text={textDraft} layout={textLayout} page={textPage} pageCount={textPageInfo?.pageCount ?? 1} sourcePages={documentSourcePages} importWarnings={documentWarnings} onText={(value) => { resetPlayback(); setTextDraft(value); if (!value) { setTextContent(''); setImage(null); } setDocumentSourcePages(1); setDocumentWarnings([]); if (!name) { setName('typed-text.txt'); nameRef.current = 'typed-text.txt'; } }} onLayout={updateTextLayout} onPage={selectTextPage} />}
+        {documentMode && <details className="settings-disclosure page-position"><summary>Page position</summary><div className="grid"><label>X position ({settings.units})<NumberInput step="0.1" value={settings.offsetX} onValue={(value) => updateTransform({ offsetX: value })} /></label><label>Y position ({settings.units})<NumberInput step="0.1" value={settings.offsetY} onValue={(value) => updateTransform({ offsetY: value })} /></label></div></details>}
         {image && !documentMode && <PlacementControls settings={settings} aspectRatio={image.naturalWidth / image.naturalHeight} update={updateTransform} />}
         <MachineControls settings={settings} profile={profile} rasterSource={Boolean(sourcePixels)} onSetting={set} onUnits={changeUnits} onProfile={updateProfile} />
         <section className="quality-controls" aria-labelledby="quality-controls-title"><h3 id="quality-controls-title">{documentMode ? 'Preview' : 'Toolpath quality'}</h3>
@@ -976,19 +1017,19 @@ export function App() {
             </div>
           </div>
         </div>
-        <div className="job-progress" title={timingTitle || undefined}><div className="progress-copy"><span>{pipeline.label}</span><b>{Math.round(pipeline.value * 100)}%</b></div><div className="progress-track"><progress aria-label="Toolpath processing progress" max="1" value={pipeline.value} /></div>{currentTimings && <small>{currentTimings.movementCount.toLocaleString()} moves · {Math.round(currentTimings.packedMovementBytes / 1024).toLocaleString()} KiB packed · worker {(currentTimings.totalMs / 1000).toFixed(2)} s{currentTimings.previewMs === null ? '' : ` · preview ${(currentTimings.previewMs / 1000).toFixed(2)} s`}</small>}</div>
-        <div className="canvas-wrap"><ImageInput variant="dropzone" sourceType={documentMode ? 'document' : 'artwork'} onFile={upload}>{image ? <div className="toolpath-canvases" onClick={(event) => event.stopPropagation()}>
-          <canvas ref={canvas} width="1100" height="700" tabIndex={0} role="img" aria-label={editPlacement ? 'Image placement editor. Drag the image to move it or drag a corner handle to resize it. Scroll to zoom.' : `${previewMode[0].toUpperCase()}${previewMode.slice(1)} preview. Scroll to zoom, drag to pan, double-click to fit.`} onWheel={handlePreviewWheel} onDoubleClick={fitPreview} onPointerDown={startPreviewPointer} onPointerMove={movePreviewPointer} onPointerUp={endPreviewPointer} onPointerCancel={endPreviewPointer} />
+        <div className="job-progress" title={timingTitle || undefined} role="status" aria-live="polite"><div className="progress-copy"><span>{pipeline.label}</span><b>{Math.round(pipeline.value * 100)}%</b></div><div className="progress-track"><progress aria-label="Toolpath processing progress" max="1" value={pipeline.value} /></div>{currentTimings && <small>{currentTimings.movementCount.toLocaleString()} moves · {Math.round(currentTimings.packedMovementBytes / 1024).toLocaleString()} KiB packed · worker {(currentTimings.totalMs / 1000).toFixed(2)} s{currentTimings.previewMs === null ? '' : ` · preview ${(currentTimings.previewMs / 1000).toFixed(2)} s`}</small>}</div>
+        <div className="canvas-wrap"><ImageInput variant="dropzone" sourceType={documentMode ? 'document' : 'artwork'} browseOnClick={!image} onFile={upload}>{image ? <div className="toolpath-canvases" onClick={(event) => event.stopPropagation()}>
+          <canvas ref={canvas} width="1100" height="700" role="img" aria-label={editPlacement ? 'Image placement preview. Numeric placement controls are available in Job setup.' : `${previewMode[0].toUpperCase()}${previewMode.slice(1)} preview. Viewport buttons provide keyboard-accessible zoom and fit controls.`} onWheel={handlePreviewWheel} onDoubleClick={fitPreview} onPointerDown={startPreviewPointer} onPointerMove={movePreviewPointer} onPointerUp={endPreviewPointer} onPointerCancel={endPreviewPointer} />
           <canvas ref={playbackCanvas} className="playback-canvas" width="1100" height="700" aria-hidden="true" />
           <div className="preview-status"><span>{previewMode}</span><span>{Math.round(zoom * 100)}%</span><span>{settings.outputWidth.toFixed(1)} × {settings.outputHeight.toFixed(1)} {settings.units}</span>{previewMode === 'toolpath' && currentTimings?.previewSegments ? <span>{currentTimings.previewSegments.toLocaleString()} segments</span> : null}</div>
           <div className="preview-hint">{editPlacement ? 'Drag to move · Drag corners to resize · Scroll to zoom' : previewMode === 'toolpath' ? 'Scroll to zoom · Drag to pan · Double-click to fit' : 'Preview only · Scroll to zoom · Drag to pan · Double-click to fit'}</div>
         </div> : <div className="preview-empty"><b>Toolpath preview</b><span>{documentMode ? 'Type text in the sidebar or import a DOCX / text PDF.' : 'Upload an image or SVG to generate a preview.'}</span></div>}</ImageInput></div>
-        <div className="playback">{previewMode === 'toolpath' && <div className="preview-overlays" role="group" aria-label="Toolpath overlays"><button type="button" className={showTravel ? 'selected' : ''} aria-pressed={showTravel} title="Show or hide tool-inactive travel moves" onClick={() => setShowTravel((value) => !value)}>Travel</button><button type="button" className={showEndpoints ? 'selected' : ''} aria-pressed={showEndpoints} title="Show or hide active-path start and end markers" onClick={() => setShowEndpoints((value) => !value)}>Start / end</button></div>}<div className="playback-controls"><button aria-label={playing ? 'Pause toolpath playback' : 'Play toolpath playback'} disabled={!currentPreviewTiming || previewMode !== 'toolpath'} onClick={() => setPlaying((value) => { if (!value && playbackMinuteRef.current >= playbackTotalMinutes) { playbackMinuteRef.current = 0; setPlaybackMinutes(0); playbackDrawRef.current(0); } return !value; })}>{playing ? <Pause /> : <Play />}</button><input aria-label="Toolpath playback" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} type="range" min="0" max="1" step=".001" value={playbackProgress} onChange={(event) => { const next = Number(event.target.value) * playbackTotalMinutes; setPlaying(false); playbackMinuteRef.current = next; setPlaybackMinutes(next); playbackDrawRef.current(next); }} /><button aria-label="Restart toolpath playback" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} onClick={() => { setPlaying(false); playbackMinuteRef.current = 0; setPlaybackMinutes(0); playbackDrawRef.current(0); }}><RotateCcw /></button><label className="playback-speed">Speed<select aria-label="Playback speed" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}>{[0.25, 0.5, 1, 2, 5, 10].map((speed) => <option key={speed} value={speed}>{speed}×</option>)}</select></label><span className="playback-time">{formatPlaybackClock(playbackMinutes)} / {formatPlaybackClock(playbackTotalMinutes)}</span></div></div>
+        <div className="playback">{previewMode === 'toolpath' && <div className="preview-overlays" role="group" aria-label="Toolpath overlays"><button type="button" className={showTravel ? 'selected' : ''} aria-pressed={showTravel} title="Show or hide tool-inactive travel moves" onClick={() => setShowTravel((value) => !value)}>Travel</button><button type="button" className={showEndpoints ? 'selected' : ''} aria-pressed={showEndpoints} title="Show or hide active-path start and end markers" onClick={() => setShowEndpoints((value) => !value)}>Start / end</button></div>}<div className="playback-controls"><button aria-label={playing ? 'Pause toolpath playback' : 'Play toolpath playback'} disabled={!currentPreviewTiming || previewMode !== 'toolpath'} onClick={() => setPlaying((value) => { if (!value && playbackMinuteRef.current >= playbackTotalMinutes) { playbackMinuteRef.current = 0; setPlaybackMinutes(0); playbackDrawRef.current(0); } return !value; })}>{playing ? <Pause /> : <Play />}</button><input aria-label="Toolpath playback" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} type="range" min="0" max="1" step=".001" value={playbackProgress} onChange={(event) => { const next = Number(event.target.value) * playbackTotalMinutes; setPlaying(false); playbackMinuteRef.current = next; setPlaybackMinutes(next); playbackDrawRef.current(next); }} /><button aria-label="Restart toolpath playback" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} onClick={() => { setPlaying(false); playbackMinuteRef.current = 0; setPlaybackMinutes(0); playbackDrawRef.current(0); }}><RotateCcw /></button><label className="playback-speed">Speed<select aria-label="Playback speed" disabled={!currentPreviewTiming || previewMode !== 'toolpath'} value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}>{[0.25, 0.5, 1, 2, 5, 10].map((speed) => <option key={speed} value={speed}>{speed}×</option>)}</select></label><span className="playback-time">{formatPlaybackClock(currentPreviewTiming ? playbackMinutes : 0)} / {formatPlaybackClock(playbackTotalMinutes)}</span></div></div>
       </section>
-      <aside className="code" aria-label="G-code inspector"><div className="code-head"><h2>G-code inspector</h2><button disabled={!image || placementPending || gcodeState === 'generating'} title={preflight.status === 'blocked' ? 'Open preflight to review blocking export issues' : 'Review preflight before copying'} onClick={() => openPreflight('copy')}><Copy size={15} /> {gcodeState === 'generating' ? 'Generating…' : 'Copy'}</button></div>{currentGcode ? <><input aria-label="Search G-code" placeholder="Search G-code" value={search} onChange={(event) => setSearch(event.target.value)} /><p className="code-limit">{search ? 'Showing 200 lines from the match' : `Showing first ${Math.min(2_000, currentGcode.lines).toLocaleString()} of ${currentGcode.lines.toLocaleString()} lines`}</p><pre>{gcodeLines?.lines.map((line, index) => <div key={index} className={search && line.toLowerCase().includes(search.toLowerCase()) ? 'match' : ''}><i>{String((gcodeLines?.start ?? 1) + index).padStart(4, '0')}</i>{line}</div>)}</pre></> : <div className="gcode-empty"><p>{placementPending ? 'Updating placement…' : currentJobResult ? `G-code for ${documentMode ? `page ${textPage + 1}` : 'this job'} is ready to generate on demand.` : image ? 'Toolpath is still processing or requires correction.' : documentMode ? 'Type text or import a document to prepare G-code.' : 'Import an image to prepare G-code.'}</p><button disabled={!currentJobResult || placementPending || gcodeState === 'generating'} onClick={() => requestGcode('inspect')}>{gcodeState === 'generating' ? 'Generating G-code…' : 'Open G-code inspector'}</button></div>}</aside>
+      <aside className="code" aria-label="G-code inspector"><div className="code-head"><h2>G-code inspector</h2><button disabled={!image || placementPending || gcodeState === 'generating'} title={preflight.status === 'blocked' ? 'Open preflight to review blocking export issues' : 'Review preflight before copying'} onClick={() => openPreflight('copy')}><Copy size={15} /> {gcodeState === 'generating' ? 'Generating…' : 'Copy'}</button></div>{currentGcode ? <><input aria-label="Search G-code" aria-describedby="gcode-search-status" placeholder="Search G-code" value={search} onChange={(event) => setSearch(event.target.value)} /><p className="code-limit" id="gcode-search-status" role="status" aria-live="polite">{gcodeLines?.summary}</p><pre aria-label="G-code search results">{gcodeLines?.lines.map((line, index) => <div key={index} className={search && line.toLowerCase().includes(search.toLowerCase()) ? 'match' : ''}><i>{String((gcodeLines?.start ?? 1) + index).padStart(4, '0')}</i>{line}</div>)}</pre></> : <div className="gcode-empty"><p>{placementPending ? 'Updating placement…' : currentJobResult ? `G-code for ${documentMode ? `page ${textPage + 1}` : 'this job'} is ready to generate on demand.` : image ? 'Toolpath is still processing or requires correction.' : documentMode ? 'Type text or import a document to prepare G-code.' : 'Import an image to prepare G-code.'}</p><button disabled={!currentJobResult || placementPending || gcodeState === 'generating'} onClick={() => requestGcode('inspect')}>{gcodeState === 'generating' ? 'Generating G-code…' : 'Open G-code inspector'}</button></div>}</aside>
     </main>
     {reviewOpen && <PreflightDialog result={preflight} settings={settings} profile={profile} mode={mode} action={reviewAction} generating={gcodeState === 'generating'} gcodeMegabytes={currentGcode ? currentGcode.characters / 1_000_000 : null} closeButtonRef={reviewCloseButton} onClose={closePreflight} onConfirm={() => { const approvedKey = reviewKey; const approvedAction = reviewAction; closePreflight(); requestGcode(approvedAction, approvedKey, true); }} />}
-    <footer aria-label="Job status and safety">{complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey && <div className="warning complexity-warning" role="alert"><AlertTriangle size={15} />This setting estimates {complexity.movements.toLocaleString()} movements and may use significant memory. Recommended: ≥ {complexity.recommendedDetail.toFixed(2)} mm.<button onClick={() => setApprovedExtremeKey(complexityKey)}>Process anyway</button></div>}{workerError && <div className="warning" role="alert"><AlertTriangle size={15} />{workerError}</div>}{currentJobResult?.warnings.map((warning) => <div className="warning" role="status" key={warning}><AlertTriangle size={15} />{warning}</div>)}{currentStats && currentJobResult && <div className="stats" aria-label="Toolpath statistics"><span>{currentStats.movementCount} movements</span><span>{currentStats.working} working / {currentStats.travels} travel moves</span><span>{currentStats.work.toFixed(1)} {settings.units} drawing</span><span>{currentStats.travel.toFixed(1)} {settings.units} travel</span><span>{Math.round(currentStats.travelEfficiency * 100)}% efficient · {currentStats.toolLifts} lifts</span><span title="Approximate. Controller acceleration, dwell, and custom commands may change real runtime.">Estimated time: {formatEstimatedDuration(currentStats.estimate.totalMinutes)}</span><span>X {currentStats.bounds?.minX.toFixed(1)}–{currentStats.bounds?.maxX.toFixed(1)} · Y {currentStats.bounds?.minY.toFixed(1)}–{currentStats.bounds?.maxY.toFixed(1)}</span></div>}<div className="safety"><AlertTriangle size={14} /> Always inspect G-code and verify your machine configuration. Previewing does not guarantee safe operation.<span className="footer-license">© 2026 William Xu · <a href="https://github.com/wxu2206/image-to-gcode/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a> · <a href="https://github.com/wxu2206/image-to-gcode" target="_blank" rel="noopener noreferrer">GitHub</a></span></div></footer>
+    <footer aria-label="Job status and safety">{complexity?.level === 'extreme' && approvedExtremeKey !== complexityKey && <div className="warning complexity-warning" role="alert"><AlertTriangle size={15} />This setting estimates {complexity.movements.toLocaleString()} movements and may use significant memory. Recommended: ≥ {complexity.recommendedDetail.toFixed(2)} mm.<button onClick={() => setApprovedExtremeKey(complexityKey)}>Process anyway</button></div>}{workerError && <div className="warning" role="alert"><AlertTriangle size={15} />{workerError}</div>}{copyNotice && <div className="copy-status" role="status">{copyNotice}</div>}<JobWarnings warnings={currentJobResult?.warnings ?? []} />{currentStats && currentJobResult && <div className="stats" aria-label="Toolpath statistics"><span>{currentStats.movementCount} movements</span><span>{currentStats.working} working / {currentStats.travels} travel moves</span><span>{currentStats.work.toFixed(1)} {settings.units} drawing</span><span>{currentStats.travel.toFixed(1)} {settings.units} travel</span><span>{Math.round(currentStats.travelEfficiency * 100)}% efficient · {currentStats.toolLifts} lifts</span><span title="Approximate. Controller acceleration, dwell, and custom commands may change real runtime.">Estimated time: {formatEstimatedDuration(currentStats.estimate.totalMinutes)}</span><span>X {currentStats.bounds?.minX.toFixed(1)}–{currentStats.bounds?.maxX.toFixed(1)} · Y {currentStats.bounds?.minY.toFixed(1)}–{currentStats.bounds?.maxY.toFixed(1)}</span></div>}<div className="safety"><AlertTriangle size={14} /> Always inspect G-code and verify your machine configuration. Previewing does not guarantee safe operation.<span className="footer-license">© 2026 William Xu · <a href="https://github.com/wxu2206/image-to-gcode/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a> · <a href="https://github.com/wxu2206/image-to-gcode" target="_blank" rel="noopener noreferrer">GitHub</a></span></div></footer>
   </div>;
 }
 

@@ -56,7 +56,7 @@ This project was built using a combination of human-written code and AI-assisted
 
 ## Machine profiles and export
 
-A post-processor defines controller syntax and capabilities; a machine profile supplies the user's work area, feeds, and commands. Built-in processors are trusted bundled code—saved data cannot inject executable plugins. Older custom profiles migrate to the conservative Generic processor while retaining their command strings. Custom profiles and settings persist in localStorage. Exports use `source-name-mode.gcode`. See [Machine output and post-processors](docs/machine-output.md).
+A post-processor defines controller syntax and capabilities. An output profile selects that processor, its controller command blocks, and CNC pass depth; separately persisted job settings supply work area, feeds, placement, and Z limits. Built-in processors are trusted bundled code—saved data cannot inject executable plugins. Older custom profiles migrate to the conservative Generic processor while retaining their command strings. Custom profiles and settings persist in localStorage. Exports use `source-name-mode.gcode`. See [Machine output and post-processors](docs/machine-output.md).
 
 Pen and laser processors require explicit user-configured on/off commands. Generic CNC always generates standalone safe-Z retraction before XY rapid travel, but never silently starts a spindle. No processor assumes homing has occurred.
 

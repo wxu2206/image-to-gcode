@@ -53,6 +53,21 @@ describe('secure SVG parsing', () => {
     expect(document.warnings).toContain('SVG fills are not hatched; stroked geometry was imported as centerlines.');
   });
 
+  it('ignores geometry made fully transparent by object, group, stroke, or fill opacity', () => {
+    const document = parseSvgText(svg(`
+      <line x2="10" y2="10" stroke="black" />
+      <line x2="20" y2="20" stroke="black" opacity="0" />
+      <g opacity="0"><line x2="30" y2="30" stroke="black" /></g>
+      <line x2="40" y2="40" stroke="black" stroke-opacity="0" />
+      <rect x="50" y="0" width="5" height="5" fill="black" fill-opacity="0" />
+      <line x2="60" y2="40" stroke="transparent" />
+      <rect x="70" y="0" width="5" height="5" fill="#00000000" />
+      <circle cx="80" cy="5" r="4" fill="rgba(0, 0, 0, 0)" />
+    `));
+    expect(document.paths).toHaveLength(1);
+    expect(document.warnings).toContain('Fully transparent SVG geometry was ignored.');
+  });
+
   it('deduplicates unsupported and unsafe feature warnings and retains only safe geometry', () => {
     const document = parseSvgText(unsafeSvg);
     expect(document.paths).toHaveLength(1);
@@ -94,6 +109,13 @@ describe('secure SVG parsing', () => {
     expect(() => parseSvgText(svg('<path d="M0 0 L1 0 L2 0 L3 0"/>'), { maxNodes: 10, maxDepth: 3, maxPathCommands: 2, maxSegments: 2 })).toThrow(/limit exceeded/i);
     const hugePoints = Array.from({ length: 80 }, (_, index) => `${index},${index % 10}`).join(' ');
     expect(() => parseSvgText(svg(`<polygon points="${hugePoints}"/>`), { maxNodes: 10, maxDepth: 3, maxPathCommands: 50, maxSegments: 50 })).toThrow(/limit exceeded/i);
+    const muchLargerPoints = Array.from({ length: 10_000 }, (_, index) => `${index},0`).join(' ');
+    expect(() => parseSvgText(svg(`<polyline points="${muchLargerPoints}" stroke="black"/>`), { maxNodes: 10, maxDepth: 3, maxPathCommands: 4, maxSegments: 4 })).toThrow(/limit exceeded/i);
+  });
+
+  it('accepts an explicitly closed polygon exactly at the segment budget', () => {
+    const document = parseSvgText(svg('<polygon points="0,0 1,0 1,1 0,0"/>'), { maxNodes: 10, maxDepth: 3, maxPathCommands: 3, maxSegments: 3 });
+    expect(document.segmentCount).toBe(3);
   });
 
   it('is deterministic, including stable IDs and warnings', () => {

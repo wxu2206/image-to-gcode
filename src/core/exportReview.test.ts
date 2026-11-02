@@ -63,6 +63,12 @@ describe('canonical G-code preflight', () => {
     expect(result.checks.find((item) => item.id === 'work-envelope-y')?.severity).toBe('pass');
   });
 
+  it('shows small bounds overruns at the selected eight-digit output precision', () => {
+    const stats = { ...validStats, bounds: { ...validStats.bounds!, maxX: defaults.workWidth + 0.00000004 } };
+    const result = buildPreflight(input({ stats, settings: { ...defaults, precision: 8 } }));
+    expect(result.checks.find((item) => item.id === 'work-envelope-x')?.message).toBe('X exceeds maximum by 0.00000004 mm.');
+  });
+
   it('blocks non-finite canonical coordinates even when finite points still produce bounds', () => {
     const moves: Move[] = [
       { command: 'G0', from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, working: false, feed: 100 },

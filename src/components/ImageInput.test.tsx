@@ -5,6 +5,14 @@ import { ImageInput } from './ImageInput';
 const file = (name: string, type: string) => new File(['image'], name, { type });
 
 describe('ImageInput', () => {
+  it('exposes the toolbar import action as a keyboard-focusable button', () => {
+    render(<ImageInput variant="toolbar" onFile={vi.fn().mockResolvedValue(undefined)}/>);
+    const input = screen.getByLabelText('Choose image or SVG');
+    const click = vi.spyOn(input, 'click');
+    fireEvent.click(screen.getByRole('button', { name: 'Import source' }));
+    expect(click).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['PNG', file('drawing.png', 'image/png')],
     ['JPEG', file('photo with spaces.JPG', 'image/jpeg')],
@@ -49,6 +57,19 @@ describe('ImageInput', () => {
     const click = vi.spyOn(input, 'click');
     fireEvent.click(screen.getByRole('button', { name: /drop an image/i }));
     expect(click).toHaveBeenCalledOnce();
+  });
+
+  it('does not wrap loaded preview content in another interactive button', () => {
+    render(<ImageInput variant="dropzone" onFile={vi.fn().mockResolvedValue(undefined)}><canvas tabIndex={0} aria-label="Preview" /></ImageInput>);
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByLabelText('Preview')).not.toBeNull();
+  });
+
+  it('recognizes document MIME types during drag hover without a filename', () => {
+    render(<ImageInput variant="dropzone" sourceType="document" onFile={vi.fn().mockResolvedValue(undefined)}/>);
+    const zone = screen.getByRole('button', { name: /drop a docx/i });
+    fireEvent.dragEnter(zone, { dataTransfer: { files: [], items: [{ type: 'application/pdf' }], types: ['Files'] } });
+    expect(zone.classList.contains('drag-active')).toBe(true);
   });
 
   it('rejects unsupported and multiple files with useful errors', async () => {
@@ -104,6 +125,6 @@ describe('ImageInput', () => {
     await Promise.resolve();
     expect(screen.queryByRole('alert')).toBeNull();
     resolveSecond();
-    await waitFor(() => expect(screen.getByText('Import source').closest('label')?.getAttribute('aria-busy')).toBe('false'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Import source' }).getAttribute('aria-busy')).toBe('false'));
   });
 });
