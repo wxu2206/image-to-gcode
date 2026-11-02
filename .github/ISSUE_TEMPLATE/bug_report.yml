@@ -71,6 +71,8 @@ body:
         - Raster scanline
         - Contour / outline
         - Grayscale engraving
+        - Native SVG vectors
+        - Text / document
         - G-code inspector or preview
         - Machine profile or settings
         - Other

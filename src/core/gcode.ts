@@ -99,6 +99,13 @@ function buildCanonicalMovements(toolpath: Toolpath, settings: Settings, profile
   }
 
   const moves: Move[] = [];
+  const outsidePaths = new Set<string>();
+  const outsideStarts = new Set<string>();
+  const outsideExtents = new Set<string>();
+  const recordOutside = (id: string, start: boolean) => {
+    outsidePaths.add(id);
+    (start ? outsideStarts : outsideExtents).add(id);
+  };
   let current: Point = profile.kind === 'cnc' ? { x: 0, y: 0 } : { x: 0, y: 0 };
   const xScale = settings.outputWidth / toolpath.width;
   const yScale = settings.outputHeight / toolpath.height;
@@ -143,14 +150,14 @@ function buildCanonicalMovements(toolpath: Toolpath, settings: Settings, profile
   for (const path of toolpath.paths) {
     if (path.points.length < 2) continue;
     const start = mapped(path.points[0]);
-    if (outsideWorkArea(start, settings)) warningSet.add(`Path ${path.id} begins outside work area.`);
+    if (outsideWorkArea(start, settings)) recordOutside(path.id, true);
 
     if (path.kind === 'travel') {
       if (profile.kind === 'cnc') liftToSafeZ(path.id);
       addMove('G0', { ...start, z: profile.kind === 'cnc' ? settings.safeZ : undefined }, false, settings.travel, path.id);
       for (let pointIndex = 1; pointIndex < path.points.length; pointIndex += 1) {
         const target = mapped(path.points[pointIndex]);
-        if (outsideWorkArea(target, settings)) warningSet.add(`Path ${path.id} extends outside work area.`);
+        if (outsideWorkArea(target, settings)) recordOutside(path.id, false);
         addMove('G0', { ...target, z: profile.kind === 'cnc' ? settings.safeZ : undefined }, false, settings.travel, path.id);
         pointDone += 1;
       }
@@ -169,7 +176,7 @@ function buildCanonicalMovements(toolpath: Toolpath, settings: Settings, profile
       for (let pointIndex = 1; pointIndex < path.points.length; pointIndex += 1) {
         const target = mapped(path.points[pointIndex]);
         if (profile.kind === 'cnc') target.z = depthAt(target);
-        if (outsideWorkArea(target, settings)) warningSet.add(`Path ${path.id} extends outside work area.`);
+        if (outsideWorkArea(target, settings)) recordOutside(path.id, false);
         addMove('G1', target, true, settings.feed, path.id);
         pointDone += 1;
         if (pointDone % 4096 === 0) onProgress?.('movements', pointDone, pointTotal);
@@ -178,6 +185,10 @@ function buildCanonicalMovements(toolpath: Toolpath, settings: Settings, profile
   }
 
   if (profile.kind === 'cnc') liftToSafeZ();
+  if (outsidePaths.size) {
+    const examples = [...outsidePaths].slice(0, 10).join(', ');
+    warningSet.add(`${outsidePaths.size} paths outside work area (${outsideStarts.size} start outside; ${outsideExtents.size} extend outside). Path IDs: ${examples}${outsidePaths.size > 10 ? `; ${outsidePaths.size - 10} more` : ''}.`);
+  }
   onProgress?.('movements', pointTotal, pointTotal);
   return { moves, warnings: [...warningSet] };
 }

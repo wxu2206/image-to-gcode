@@ -177,7 +177,7 @@ export function buildPreflight(input: PreflightInput): PreflightResult {
   }
 
   const bounds = canonical?.bounds;
-  const precision = Math.max(1, Math.min(6, Number.isInteger(settings.precision) ? settings.precision : 3));
+  const precision = Math.max(1, Math.min(8, Number.isInteger(settings.precision) ? settings.precision : 3));
   const amount = (value: number) => value.toFixed(precision);
   const axisCheck = (axis: 'X' | 'Y', minimum: number | undefined, maximum: number | undefined, limit: number) => {
     const id = `work-envelope-${axis.toLowerCase()}`;

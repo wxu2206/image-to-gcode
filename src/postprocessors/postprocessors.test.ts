@@ -74,10 +74,29 @@ describe('exact post-processor golden output', () => {
     }], { settings, profile: pen('grbl-pen'), mode: 'contour' })).toThrow('non-finite');
   });
 
-  it('puts custom non-terminal shutdown commands before the mandatory final off state', () => {
+  it('puts the tool in a safe state before and after custom non-terminal shutdown commands', () => {
     const profile = { ...pen('grbl-pen'), footer: 'M7\nM2' };
     const lines = generate(toolpath, settings, profile).code.trim().split('\n');
-    expect(lines.slice(-3)).toEqual(['M7', 'UP', 'M2']);
+    expect(lines.slice(-7)).toEqual(['UP', 'G21', 'G90', 'G94', 'M7', 'UP', 'M2']);
+  });
+
+  it('turns a pen off before a footer parking move', () => {
+    const profile = { ...pen('grbl-pen'), footer: 'G0 X0 Y0\nM2' };
+    const lines = generate(toolpath, settings, profile).code.trim().split('\n');
+    expect(lines.slice(-7)).toEqual(['UP', 'G21', 'G90', 'G94', 'G0 X0 Y0', 'UP', 'M2']);
+  });
+
+  it('restores authoritative units and absolute positioning after tool-off before footer motion', () => {
+    const profile = { ...pen('grbl-pen'), toolOff: 'G20\nG91\nUP', footer: 'G0 X10 Y10\nM2' };
+    const lines = generate(toolpath, settings, profile).code.trim().split('\n');
+    const parking = lines.indexOf('G0 X10 Y10');
+    expect(lines.slice(parking - 6, parking)).toEqual(['G20', 'G91', 'UP', 'G21', 'G90', 'G94']);
+  });
+
+  it.each(['N100 M30', 'M02', 'M30(comment)', 'M2; end'])('keeps terminal footer variant %s after the mandatory final off state', (footer) => {
+    const profile = { ...pen('grbl-pen'), footer };
+    const lines = generate(toolpath, settings, profile).code.trim().split('\n');
+    expect(lines.slice(-2)).toEqual(['UP', footer]);
   });
 
   it('changes syntax and tool state without changing controller-independent XY geometry', () => {

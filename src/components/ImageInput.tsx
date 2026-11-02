@@ -8,19 +8,29 @@ type ImageInputProps = {
   variant: 'toolbar' | 'dropzone';
   children?: ReactNode;
   sourceType?: 'artwork' | 'document';
+  browseOnClick?: boolean;
 };
 
 function containsFiles(event: globalThis.DragEvent | DragEvent) {
   return Array.from(event.dataTransfer?.types ?? []).includes('Files');
 }
 
-export function ImageInput({ onFile, variant, children, sourceType = 'artwork' }: ImageInputProps) {
+export function ImageInput({ onFile, variant, children, sourceType = 'artwork', browseOnClick = !children }: ImageInputProps) {
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const dragDepth = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const acceptRequest = useRef(0);
+
+  useEffect(() => {
+    acceptRequest.current += 1;
+    setError(null);
+    setBusy(false);
+    setDragActive(false);
+    dragDepth.current = 0;
+    return () => { acceptRequest.current += 1; };
+  }, [sourceType]);
 
   useEffect(() => {
     const preventFileNavigation = (event: globalThis.DragEvent) => {
@@ -81,9 +91,9 @@ export function ImageInput({ onFile, variant, children, sourceType = 'artwork' }
   };
 
   const input = <input ref={inputRef} aria-label={sourceType === 'document' ? 'Choose DOCX or PDF' : 'Choose image or SVG'} type="file" accept={sourceType === 'document' ? 'application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,.docx,.doc' : 'image/png,image/jpeg,image/webp,image/svg+xml,.jpg,.jpeg,.svg'} onChange={onChange} disabled={busy}/>;
-  if (variant === 'toolbar') return <div className="image-input"><label className="upload" aria-busy={busy}><Upload size={16}/>{busy ? 'Loading…' : sourceType === 'document' ? 'Import document' : 'Import source'}{input}</label>{error&&<span className="upload-error" role="alert">{error}</span>}</div>;
+  if (variant === 'toolbar') return <div className="image-input"><button type="button" className="upload" aria-busy={busy} disabled={busy} onClick={() => inputRef.current?.click()}><Upload aria-hidden="true" size={16}/>{busy ? 'Loading…' : sourceType === 'document' ? 'Import document' : 'Import source'}</button>{input}{error&&<span className="upload-error" role="alert">{error}</span>}</div>;
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inputRef.current?.click(); }
   };
-  return <div className="drop-container"><div role="button" tabIndex={0} className={`drop ${dragActive ? 'drag-active' : ''} ${children ? 'has-content' : ''}`} onClick={(event)=>{if(event.target!==inputRef.current)inputRef.current?.click()}} onKeyDown={onKeyDown} onDragEnter={onDragEnter} onDragOver={(event)=>event.preventDefault()} onDragLeave={onDragLeave} onDrop={onDrop} aria-busy={busy}>{children ?? <><Upload size={34}/><b>{busy ? 'Loading file…' : sourceType === 'document' ? 'Drop a DOCX or text PDF, or type text in the sidebar' : 'Drop an image or SVG, or click to browse'}</b><span>{sourceType === 'document' ? 'DOCX or text-based PDF — extracted locally in your browser' : 'PNG, JPEG, WebP, or SVG — processed entirely in your browser'}</span></>}{input}</div>{error&&<span className="drop-error" role="alert">{error}</span>}</div>;
+  return <div className="drop-container"><div role={browseOnClick ? 'button' : undefined} tabIndex={browseOnClick ? 0 : undefined} className={`drop ${dragActive ? 'drag-active' : ''} ${children ? 'has-content' : ''}`} onClick={browseOnClick ? (event)=>{if(event.target!==inputRef.current)inputRef.current?.click()} : undefined} onKeyDown={browseOnClick ? onKeyDown : undefined} onDragEnter={onDragEnter} onDragOver={(event)=>event.preventDefault()} onDragLeave={onDragLeave} onDrop={onDrop} aria-busy={busy}>{children ?? <><Upload aria-hidden="true" size={34}/><b>{busy ? 'Loading file…' : sourceType === 'document' ? 'Drop a DOCX or text PDF, or type text in the sidebar' : 'Drop an image or SVG, or click to browse'}</b><span>{sourceType === 'document' ? 'DOCX or text-based PDF — extracted locally in your browser' : 'PNG, JPEG, WebP, or SVG — processed entirely in your browser'}</span></>}{input}</div>{error&&<span className="drop-error" role="alert">{error}</span>}</div>;
 }

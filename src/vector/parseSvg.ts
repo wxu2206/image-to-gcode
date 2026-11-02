@@ -4,7 +4,15 @@ import { DEFAULT_VECTOR_PARSE_LIMITS } from './model';
 import { parsePathData } from './pathData';
 
 type ViewBox = { minX: number; minY: number; width: number; height: number };
-type PaintState = { stroke: string; fill: string; strokeWidth: number; hidden: boolean };
+type PaintState = {
+  stroke: string;
+  fill: string;
+  strokeWidth: number;
+  opacity: number;
+  strokeOpacity: number;
+  fillOpacity: number;
+  hidden: boolean;
+};
 type StackEntry = { element: Element; matrix: AffineMatrix; paint: PaintState; depth: number; root: boolean };
 
 const numeric = /^[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?$/;
@@ -43,6 +51,17 @@ function svgLength(value: string | null, fallback?: number): number {
               : null;
   if (factor === null) throw new Error(`Unsupported SVG dimension unit “${unit || value}”.`);
   return amount * factor;
+}
+
+function svgOpacity(value: string | null, fallback: number): number {
+  if (value === null || value.trim() === '') return fallback;
+  const trimmed = value.trim();
+  const percentage = trimmed.endsWith('%');
+  const numericValue = percentage ? trimmed.slice(0, -1) : trimmed;
+  if (!numeric.test(numericValue)) throw new Error(`SVG opacity value “${excerpt(value)}” is malformed.`);
+  const parsed = Number(numericValue) / (percentage ? 100 : 1);
+  if (!Number.isFinite(parsed)) throw new Error('SVG contains a non-finite opacity value.');
+  return Math.min(1, Math.max(0, parsed));
 }
 
 function parseViewBox(value: string | null): ViewBox | null {
@@ -104,12 +123,15 @@ function nestedViewport(element: Element, warn: (message: string) => void): Affi
   return multiplyAffine([1, 0, 0, 1, x, y], viewBoxMatrix(viewBox, width, height, element.getAttribute('preserveAspectRatio'), warn));
 }
 
-function parsePoints(value: string | null): VectorPoint[] {
+function parsePoints(value: string | null, maximumPoints: number): VectorPoint[] {
   if (!value?.trim()) throw new Error('SVG point list is empty.');
-  const parts = value.trim().split(/[\s,]+/).map(Number);
-  if (parts.length < 4 || parts.length % 2 || parts.some((part) => !Number.isFinite(part))) throw new Error('SVG point list must contain finite X/Y pairs.');
+  if (maximumPoints < 2) throw new Error('SVG vector segment limit exceeded. Simplify the SVG and try again.');
+  const parts = value.trim().split(/[\s,]+/, maximumPoints * 2 + 1);
+  if (parts.length > maximumPoints * 2) throw new Error('SVG vector segment limit exceeded. Simplify the SVG and try again.');
+  const numbers = parts.map(Number);
+  if (numbers.length < 4 || numbers.length % 2 || numbers.some((part) => !Number.isFinite(part))) throw new Error('SVG point list must contain finite X/Y pairs.');
   const points: VectorPoint[] = [];
-  for (let index = 0; index < parts.length; index += 2) points.push(point(parts[index], parts[index + 1]));
+  for (let index = 0; index < numbers.length; index += 2) points.push(point(numbers[index], numbers[index + 1]));
   return points;
 }
 
@@ -120,7 +142,7 @@ function lineSegments(points: VectorPoint[], close: boolean): VectorSegment[] {
   return segments;
 }
 
-function shapePaths(element: Element, id: string): VectorPath[] {
+function shapePaths(element: Element, id: string, remainingSegments: number): VectorPath[] {
   const name = element.localName.toLowerCase();
   if (name === 'line') {
     const from = point(finiteNumber(element.getAttribute('x1'), 0), finiteNumber(element.getAttribute('y1'), 0));
@@ -128,8 +150,8 @@ function shapePaths(element: Element, id: string): VectorPath[] {
     return [{ id: `${id}-0`, closed: false, segments: [{ type: 'line', from, to }], transform: IDENTITY_MATRIX }];
   }
   if (name === 'polyline' || name === 'polygon') {
-    const points = parsePoints(element.getAttribute('points'));
     const closed = name === 'polygon';
+    const points = parsePoints(element.getAttribute('points'), remainingSegments + 1);
     return [{ id: `${id}-0`, closed, segments: lineSegments(points, closed), transform: IDENTITY_MATRIX }];
   }
   if (name === 'rect') {
@@ -174,6 +196,15 @@ function closeForFill(path: VectorPath): VectorPath {
   return { ...path, closed: true, segments: samePoint(first, last) ? path.segments : [...path.segments, { type: 'line', from: last, to: first }] };
 }
 
+function fullyTransparentPaint(value: string): boolean {
+  const compact = value.trim().toLowerCase().replace(/\s+/g, '');
+  if (compact === 'transparent') return true;
+  if (/^#[0-9a-f]{4}$/.test(compact)) return compact.endsWith('0');
+  if (/^#[0-9a-f]{8}$/.test(compact)) return compact.endsWith('00');
+  if (/^(?:rgb|rgba|hsl|hsla)\([^)]*\/(?:0(?:\.0*)?|0%)\)$/.test(compact)) return true;
+  return /^(?:rgba|hsla)\([^)]*,(?:0(?:\.0*)?|0%)\)$/.test(compact);
+}
+
 /** Parses untrusted SVG into inert numeric geometry. The returned DOM-free model is safe to clone to a worker. */
 export function parseSvgText(source: string, limits: VectorParseLimits = DEFAULT_VECTOR_PARSE_LIMITS): VectorDocument {
   if (source.length > 5 * 1024 * 1024) throw new Error('Choose an SVG smaller than 5 MB.');
@@ -195,7 +226,9 @@ export function parseSvgText(source: string, limits: VectorParseLimits = DEFAULT
   const viewport = rootViewport(root, warn);
   const paths: VectorPath[] = [];
   const budget = { commands: 0, segments: 0, maxCommands: limits.maxPathCommands, maxSegments: limits.maxSegments };
-  const initialPaint: PaintState = { stroke: 'none', fill: 'black', strokeWidth: 1, hidden: false };
+  const initialPaint: PaintState = {
+    stroke: 'none', fill: 'black', strokeWidth: 1, opacity: 1, strokeOpacity: 1, fillOpacity: 1, hidden: false,
+  };
   const stack: StackEntry[] = [{ element: root, matrix: viewport.matrix, paint: initialPaint, depth: 0, root: true }];
   let nodeCount = 0;
   let stableNodeIndex = 0;
@@ -238,6 +271,9 @@ export function parseSvgText(source: string, limits: VectorParseLimits = DEFAULT
         stroke: element.getAttribute('stroke') ?? entry.paint.stroke,
         fill: element.getAttribute('fill') ?? entry.paint.fill,
         strokeWidth: element.hasAttribute('stroke-width') ? svgLength(element.getAttribute('stroke-width')) : entry.paint.strokeWidth,
+        opacity: entry.paint.opacity * svgOpacity(element.getAttribute('opacity'), 1),
+        strokeOpacity: svgOpacity(element.getAttribute('stroke-opacity'), entry.paint.strokeOpacity),
+        fillOpacity: svgOpacity(element.getAttribute('fill-opacity'), entry.paint.fillOpacity),
         hidden: entry.paint.hidden || element.getAttribute('display') === 'none' || element.getAttribute('visibility') === 'hidden',
       };
     } catch (error) {
@@ -260,7 +296,7 @@ export function parseSvgText(source: string, limits: VectorParseLimits = DEFAULT
       try {
         let nextPaths = name === 'path'
           ? parsePathData(element.getAttribute('d') ?? '', `v${stableNodeIndex}`, budget)
-          : shapePaths(element, `v${stableNodeIndex}`);
+          : shapePaths(element, `v${stableNodeIndex}`, Math.min(limits.maxPathCommands - budget.commands, limits.maxSegments - budget.segments));
         if (name !== 'path') {
           let added = 0;
           for (const path of nextPaths) added += path.segments.length;
@@ -270,8 +306,11 @@ export function parseSvgText(source: string, limits: VectorParseLimits = DEFAULT
         }
         const strokeValue = ownPaint.stroke.trim().toLowerCase();
         const fillValue = ownPaint.fill.trim().toLowerCase();
-        const hasStroke = strokeValue !== '' && strokeValue !== 'none' && ownPaint.strokeWidth > 0 && !strokeValue.includes('url(');
-        const hasFill = fillValue !== '' && fillValue !== 'none' && !fillValue.includes('url(');
+        const paintedStroke = strokeValue !== '' && strokeValue !== 'none' && ownPaint.strokeWidth > 0 && !strokeValue.includes('url(') && !fullyTransparentPaint(strokeValue);
+        const paintedFill = fillValue !== '' && fillValue !== 'none' && !fillValue.includes('url(') && !fullyTransparentPaint(fillValue);
+        const hasStroke = paintedStroke && ownPaint.opacity * ownPaint.strokeOpacity > 0;
+        const hasFill = paintedFill && ownPaint.opacity * ownPaint.fillOpacity > 0;
+        if (!hasStroke && !hasFill && (paintedStroke || paintedFill || fullyTransparentPaint(strokeValue) || fullyTransparentPaint(fillValue))) warn('Fully transparent SVG geometry was ignored.');
         if (!hasStroke && !hasFill) continue;
         if (!hasStroke && hasFill && (name === 'line' || name === 'polyline')) {
           warn('Unstroked open SVG line geometry was ignored because fills do not render on open lines.');

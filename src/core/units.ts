@@ -15,23 +15,34 @@ export function fromMillimetres(value: number, units: Units): number {
  * detail remains millimetres by design; dimension, Z, and speed values follow
  * the selected G-code unit system.
  */
-export function convertSettingsUnits(settings: Settings, units: Units): Settings {
-  if (settings.units === units) return settings;
-  const factor = settings.units === 'mm' ? 1 / MM_PER_INCH : MM_PER_INCH;
-  return {
-    ...settings,
-    units,
-    workWidth: settings.workWidth * factor,
-    workHeight: settings.workHeight * factor,
-    outputWidth: settings.outputWidth * factor,
-    outputHeight: settings.outputHeight * factor,
-    offsetX: settings.offsetX * factor,
-    offsetY: settings.offsetY * factor,
-    feed: settings.feed * factor,
-    travel: settings.travel * factor,
-    safeZ: settings.safeZ * factor,
-    workZ: settings.workZ * factor,
-    maxDepth: settings.maxDepth * factor,
-    lineSpacing: settings.lineSpacing * factor,
+const physicalFields = ['workWidth', 'workHeight', 'outputWidth', 'outputHeight', 'offsetX', 'offsetY', 'feed', 'travel', 'safeZ', 'workZ', 'maxDepth', 'lineSpacing'] as const;
+type PhysicalField = typeof physicalFields[number];
+
+/** Retain each field's authored value/unit pair across representation changes.
+ * Edits establish a new anchor for that field; unrelated edits preserve anchors.
+ * Anchors are session-local and never change stored Settings or machine precision.
+ */
+export function createSettingsUnitConverter() {
+  let previous: Settings | undefined;
+  const anchors = new Map<PhysicalField, { value: number; units: Units }>();
+  return (settings: Settings, units: Units): Settings => {
+    if (settings.units === units) return settings;
+    const next = { ...settings, units };
+    for (const key of physicalFields) {
+      let anchor = anchors.get(key);
+      if (!anchor || !previous || previous.units !== settings.units || previous[key] !== settings[key]) {
+        anchor = { value: settings[key], units: settings.units };
+        anchors.set(key, anchor);
+      }
+      next[key] = anchor.units === units ? anchor.value
+        : units === 'mm' ? anchor.value * MM_PER_INCH : anchor.value / MM_PER_INCH;
+    }
+    previous = next;
+    return next;
   };
+}
+
+/** Single conversion for stateless callers; interactive sessions reuse a converter. */
+export function convertSettingsUnits(settings: Settings, units: Units): Settings {
+  return createSettingsUnitConverter()(settings, units);
 }

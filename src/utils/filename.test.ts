@@ -10,4 +10,10 @@ describe('G-code download filenames', () => {
   it('limits the source portion while retaining a .gcode extension', () => {
     expect(gcodeFilename('a'.repeat(180) + '.jpg', 'grayscale')).toHaveLength(96 + '-grayscale.gcode'.length);
   });
+  it('keeps document page suffixes after removing the source extension', () => {
+    expect(gcodeFilename('report.docx-page-1', 'text')).toBe('report-page-1-text.gcode');
+    expect(gcodeFilename('report.pdf-page-2', 'text')).toBe('report-page-2-text.gcode');
+    expect(gcodeFilename('typed-text.txt-page-10', 'text')).toBe('typed-text-page-10-text.gcode');
+    expect(gcodeFilename('a'.repeat(180) + '.pdf-page-1', 'text')).not.toBe(gcodeFilename('a'.repeat(180) + '.pdf-page-2', 'text'));
+  });
 });
