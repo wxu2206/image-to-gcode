@@ -6,6 +6,13 @@ import { decodeImageFile, inputFileKind, isSupportedImageFile, readImagePixels, 
 
 const OriginalFileReader = globalThis.FileReader;
 const OriginalImage = globalThis.Image;
+const pngHeader = (width = 2, height = 1): ArrayBuffer => {
+  const bytes = new Uint8Array(24);
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width); view.setUint32(20, height);
+  return bytes.buffer;
+};
 
 afterEach(() => {
   globalThis.FileReader = OriginalFileReader;
@@ -47,6 +54,7 @@ describe('image loading pipeline', () => {
       onload: null | (() => void) = null;
       onerror: null | (() => void) = null;
       onabort: null | (() => void) = null;
+      readAsArrayBuffer() { this.result = pngHeader(); this.onload?.(); }
       readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload?.(); }
     }
     class SuccessfulImage {
@@ -89,6 +97,7 @@ describe('image loading pipeline', () => {
       onload: null | (() => void) = null;
       onerror: null | (() => void) = null;
       onabort: null | (() => void) = null;
+      readAsArrayBuffer() { this.result = pngHeader(); this.onload?.(); }
       readAsDataURL() { this.result = 'data:image/png;base64,broken'; this.onload?.(); }
     }
     class FailedImage {
@@ -99,5 +108,23 @@ describe('image loading pipeline', () => {
     globalThis.FileReader = SuccessfulReader as unknown as typeof FileReader;
     globalThis.Image = FailedImage as unknown as typeof Image;
     await expect(decodeImageFile(new File(['broken'], 'broken.png', { type: 'image/png' }))).rejects.toThrow('not a valid or supported image');
+  });
+
+  it('rejects excessive declared dimensions before starting the bitmap decoder', async () => {
+    const readAsDataURL = vi.fn();
+    class HeaderReader {
+      result: ArrayBuffer | null = null;
+      onload: null | (() => void) = null;
+      onerror: null | (() => void) = null;
+      onabort: null | (() => void) = null;
+      readAsArrayBuffer() { this.result = pngHeader(100_000, 100_000); this.onload?.(); }
+      readAsDataURL = readAsDataURL;
+    }
+    const decoder = vi.fn();
+    globalThis.FileReader = HeaderReader as unknown as typeof FileReader;
+    globalThis.Image = decoder as unknown as typeof Image;
+    await expect(decodeImageFile(new File(['fixture'], 'huge.png', { type: 'image/png' }))).rejects.toThrow('too many pixels');
+    expect(readAsDataURL).not.toHaveBeenCalled();
+    expect(decoder).not.toHaveBeenCalled();
   });
 });
