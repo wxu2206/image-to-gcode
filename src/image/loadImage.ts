@@ -1,4 +1,5 @@
 import { SVG_LIMITS } from '../vector/model';
+import { validateRasterHeader } from './rasterHeader';
 
 export type SupportedInputKind = 'raster' | 'svg';
 
@@ -49,7 +50,7 @@ export function decodeImageFile(file: File): Promise<HTMLImageElement> {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error(`Could not read “${file.name}”. Try another image.`));
     reader.onabort = () => reject(new Error('Image loading was cancelled.'));
-    reader.onload = () => {
+    const decode = () => {
       if (typeof reader.result !== 'string') {
         reject(new Error(`Could not read “${file.name}”. Try another image.`));
         return;
@@ -59,7 +60,21 @@ export function decodeImageFile(file: File): Promise<HTMLImageElement> {
       image.onerror = () => reject(new Error(`“${file.name}” is not a valid or supported image.`));
       image.src = reader.result;
     };
-    reader.readAsDataURL(file);
+    reader.onload = () => {
+      if (!(reader.result instanceof ArrayBuffer)) {
+        reject(new Error(`Could not read “${file.name}”. Try another image.`));
+        return;
+      }
+      try {
+        validateRasterHeader(new Uint8Array(reader.result));
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      reader.onload = decode;
+      reader.readAsDataURL(file);
+    };
+    reader.readAsArrayBuffer(file);
   });
 }
 
