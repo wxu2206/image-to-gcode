@@ -1,0 +1,5 @@
+Contact: https://github.com/wxu2206/image-to-gcode/security/advisories/new
+Expires: 2027-11-15T00:00:00Z
+Preferred-Languages: en
+Canonical: https://imagetogcode.ca/.well-known/security.txt
+Policy: https://github.com/wxu2206/image-to-gcode/security/policy
